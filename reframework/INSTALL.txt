@@ -1,0 +1,39 @@
+Meal Buffet — REFramework mod for Monster Hunter Wilds
+====================================================
+
+What it does
+------------
+Applies any canteen meal buff to your own hunter on demand, without going to
+the canteen and without spending a Meal Voucher. Meal names come from the
+game's own master data at runtime, nothing is hardcoded.
+
+The mod is in development. It writes meal state on your local hunter only; it
+never touches save data and never touches other players.
+
+Install
+-------
+1. Install REFramework for MH Wilds (dinput8.dll in the game folder).
+2. Copy meal_buffet.lua to:
+     <game>\reframework\autorun\meal_buffet.lua
+   Steam path:
+     ...\steamapps\common\MonsterHunterWilds\reframework\autorun\
+3. Open the in-game REFramework menu -> "Script Generated UI" ->
+   "Meal Buffet" to confirm it loaded.
+
+Use
+---
+1. Press Insert to open the REFramework menu.
+2. Script Generated UI -> Meal Buffet.
+3. Pick a base meal from the list.
+4. Pick the extra meal skills, or reroll them, until you like the set.
+5. Press "Apply" to put the meal on your hunter.
+
+Works in the hub, at camp, and mid-quest.
+
+Notes
+-----
+- No voucher and no ingredients are consumed.
+- Meal list and skill pool come from the game's master data at runtime.
+- Reload via REFramework menu -> "Script" -> "Reset scripts".
+- If a game patch renames an internal meal field, the mod logs a per-field
+  miss instead of erroring.

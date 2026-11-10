@@ -1,41 +1,37 @@
 --
--- meal_apply_probe2.lua v1 — phase 2 probe: read the meal master data and test
--- the game's own apply path.
+-- meal_apply_probe2.lua v2 — phase 2 probe: meal master data and the game's
+-- own apply path.
 --
--- What probe v3 established on this build:
---   * app.cMealEffect is the meal definition container: SKILL_NUM,
---     SKILL_NUM_MAX, adds, _SkillEnum (app.MealDef.SKILL[]), _DurationTimer,
---     DurationSec. Its methods include
---       copyFrom(app.user_data.MealData.cData, System.Boolean)
---       addRandomData(app.user_data.MealSkillRandomTable.cData)
---       addRandomTableParam(app.MealDef.RANDOM_SKILL_TBL_Fixed)
---       addSkill(app.MealDef.SKILL) / resetMealSkill()
---   * app.cHunterMealEffect has setMealEffect(app.cMealEffect, System.Boolean),
---     setTimerActive(bool), setEffectActive(bool), setDurationTimer(float).
---   * a real eat sets, in one frame: _IsEffectActive/_IsTimerActive = true,
---     _DurationTimer = _TimerMax = 4200, _MaxHealthAdd = 50,
---     _MaxStaminaAdd = 150, and the inner cMealEffect gets SKILL_NUM = 5 with
---     _AttackAdd 5 / _DefenceAdd 10.
---   * app.FacilityDining exists as a class and exposes setMealEffectLobby,
---     executeLobby, execute(cMealEffect, int), EnableEat.
+-- Established by probe v3 (all confirmed in game):
+--   * app.cMealEffect is the meal definition instance: SKILL_NUM, SKILL_NUM_MAX,
+--     _SkillEnum (app.MealDef.SKILL[]), adds, _DurationTimer.
+--   * app.cHunterMealEffect holds the live buff (adds, timer, flags) and
+--     exposes setMealEffect(app.cMealEffect, bool), setTimerActive(bool),
+--     setEffectActive(bool), setDurationTimer(float).
+--   * app.cMealEffect.copyFrom has one overload per meal source:
+--       copyFrom(app.user_data.MealData.cData, bool)
+--       copyFrom(app.user_data.MealDataLobby.cData, bool)
+--       copyFrom(app.user_data.MealDataLifeArea.cData, bool)
+--     plus addRandomTableParam(RANDOM_SKILL_TBL_Fixed) for the extra buffs.
 --   * app.MealUtil.getMealDataLobby(app.DiningDef.LOBBY_MENU_ID) returns the
---     base-meal record for a canteen menu entry.
+--     canteen menu record. The menu enum is INVALID, MENU_00 .. MENU_08, MAX.
+--   * app.FacilityDining is NOT a managed singleton; the live instance is
+--     app.FacilityManager:get_Dining().
 --
 -- What this probe answers:
---   1. the base meal records (index, time, hp/stam/attack/defence/attr, fixed
---      MealSkill[] and the random table ids) and the random table records
---      (skill, stat adds, weight), read through the real master-data tables;
---   2. the canteen menu: every app.DiningDef.LOBBY_MENU_ID value and the meal
---      record it resolves to, plus the field-camp LIFE_AREA variants;
---   3. whether the game's own apply path can be driven from Lua:
---        A) FacilityDining:setMealEffectLobby(menuId)      (state apply only)
---        B) build a cMealEffect, then cHunterMealEffect:setMealEffect(...)
---      each attempt is recorded with before/after state and +15/+120-frame
---      verification.
+--   1. the three meal tables with every primitive value: _MealData (3 base
+--      records), _MealDataLobby (canteen menus) and _MealDataLifeArea (camp),
+--      each with its MealSkill[] and _RandomTable[];
+--   2. the canteen menu list and which record each menu resolves to;
+--   3. three candidate apply paths, all driven from buttons:
+--        A) FacilityDining:setMealEffectLobby(menuId)
+--        B) build a cMealEffect from the menu record + random buffs, then
+--           cHunterMealEffect:setMealEffect(...) and set the timer/flags
+--        C) build only, no attach (diagnostic: what did copyFrom produce?)
 --
--- No hooks anywhere. Reads go through field descriptors (walking the parent
--- type chain, because the via.UserData tables keep _Values on the base class).
--- Writes happen only on the explicit apply buttons.
+-- No hooks. Reads use field descriptors and walk the parent type chain
+-- (via.UserData keeps _Values on a base class). Writes only on explicit
+-- buttons.
 --
 
 local re = re
@@ -45,7 +41,7 @@ local log = log
 local imgui = imgui
 local unpack = unpack or table.unpack
 
-local PROBE_VERSION = 1
+local PROBE_VERSION = 2
 
 local OUT_TYPES  = "meal_apply_probe2_types.json"
 local OUT_MASTER = "meal_apply_probe2_master.json"
@@ -110,8 +106,6 @@ local function type_name(obj)
     return td and safe(function() return td:get_full_name() end) or nil
 end
 
--- Walk the type hierarchy: the via.UserData tables declare _Values on a base
--- generic class, so a plain get_fields() on the object's own type misses it.
 local function find_field_descriptor(obj, name)
     if obj == nil then return nil end
     local td = safe(function() return obj:get_type_definition() end)
@@ -143,8 +137,8 @@ local function call_method(obj, name)
     return safe(function() return m:call(obj) end)
 end
 
--- Void game calls (setMealEffect, copyFrom, addRandomTableParam, ...) return
--- nothing, so success is "the method exists and did not throw".
+-- Void game calls return nothing, so success is "method exists and did not
+-- throw".
 local function call_void(obj, signature, ...)
     if obj == nil then return false, "no_object" end
     local td = safe(function() return obj:get_type_definition() end)
@@ -157,7 +151,6 @@ local function call_void(obj, signature, ...)
     return true, "ok"
 end
 
--- Static calls that return a value (MealUtil lookups).
 local function static_value(typeName, signature, ...)
     local td = safe(sdk.find_type_definition, typeName)
     if not td then return nil end
@@ -189,7 +182,6 @@ local function collection_get(c, i)
     return safe(function() return c[i] end)
 end
 
--- Read a managed array (System.Int32[], app.MealDef.SKILL[], ...) as primitives.
 local function array_values(arr, max)
     local out = {}
     if arr == nil then return out end
@@ -210,6 +202,35 @@ end
 local function table_values(ud)
     if ud == nil then return nil end
     return field_value(ud, "_Values") or ud
+end
+
+-- Every primitive field plus every 0-arg primitive getter. Keeps the probe
+-- independent of the exact field names of each meal record type.
+local function primitive_summary(obj, max_getters)
+    local out = {}
+    if obj == nil then return out end
+    local td = safe(function() return obj:get_type_definition() end)
+    if not td then return out end
+    for _, f in ipairs(safe(function() return td:get_fields() end) or {}) do
+        local n = safe(function() return f:get_name() end)
+        local is_static = safe(function() return f:is_static() end)
+        local v = safe(function() return f:get_data(is_static and nil or obj) end)
+        if n and not is_static and is_primitive(v) then out[n] = v end
+    end
+    local n = 0
+    for _, m in ipairs(safe(function() return td:get_methods() end) or {}) do
+        if max_getters and n >= max_getters then break end
+        local mn = safe(function() return m:get_name() end) or ""
+        local np = safe(function() return m:get_num_params() end) or 0
+        if mn:find("^get_") and np == 0 then
+            local v = safe(function() return m:call(obj) end)
+            if is_primitive(v) then
+                out[mn] = v
+                n = n + 1
+            end
+        end
+    end
+    return out
 end
 
 -- ---------------------------------------------------------------------------
@@ -263,6 +284,12 @@ local function meal_skill_name(id)
     return safe(function() return get_message_m:call(nil, guid) end)
 end
 
+local function localized(guid)
+    resolve_text_helpers()
+    if guid == nil or get_message_m == false then return nil end
+    return safe(function() return get_message_m:call(nil, guid) end)
+end
+
 -- ---------------------------------------------------------------------------
 -- local hunter + meal state
 -- ---------------------------------------------------------------------------
@@ -302,9 +329,10 @@ local function local_status()
             local ch = character_of(inst, pi)
             local st = ch and call_method(ch, "get_HunterStatus")
             if st then
-                local is_user = call_method(st, "get_IsUserControl")
-                local is_npc = call_method(st, "get_IsNpc")
-                if is_user == true and is_npc ~= true then return st, "user_control" end
+                if call_method(st, "get_IsUserControl") == true
+                    and call_method(st, "get_IsNpc") ~= true then
+                    return st, "user_control"
+                end
             end
         end
     end
@@ -331,7 +359,7 @@ local function meal_object()
 end
 
 local function effect_summary(effect)
-    local out = { type = type_name(effect), fields = {}, skills = {} }
+    local out = { type = type_name(effect), fields = {}, skills = {}, skill_names = {} }
     if effect == nil then return out end
     for _, name in ipairs({
         "SKILL_NUM", "SKILL_NUM_MAX", "_MaxHealthAdd", "_MaxStaminaAdd",
@@ -342,9 +370,8 @@ local function effect_summary(effect)
     end
     out.attr_resist = array_values(field_value(effect, "_AttrResistAdd"), 8)
     out.skills = array_values(field_value(effect, "_SkillEnum"), 12)
-    out.skill_names = {}
     for i, id in ipairs(out.skills) do
-        out.skill_names[i] = meal_skill_name(tonumber(id) or id)
+        out.skill_names[i] = meal_skill_name(tonumber(id) or 0)
     end
     return out
 end
@@ -372,8 +399,8 @@ local function meal_state()
         out.derived[g] = safe_str(call_method(meal, g))
     end
     out.effect = effect_summary(field_value(meal, "_MealEffect"))
-    out.skill_param = {}
     local spi = field_value(meal, "_SkillParamInfo")
+    out.skill_param = {}
     if spi then
         for _, name in ipairs({
             "_IsActiveGuts_L", "_IsActiveGuts_S", "_IsUsedGuts", "_UnevenTimer",
@@ -389,13 +416,13 @@ local function meal_state()
             out.health = {
                 extra_max = safe_str(field_value(hp, "_ExtraMaxHealth")),
                 red = safe_str(field_value(hp, "_RedHealth")),
+                skill_extra = safe_str(field_value(hp, "_SkillExtraMaxHealth")),
             }
         end
         local sp = call_method(st, "get_Stamina")
         if sp then
             out.stamina = {
                 temp_max = safe_str(field_value(sp, "_TempMaxStamina")),
-                request_add = safe_str(field_value(sp, "_RequestAddMaxStamina")),
             }
         end
     end
@@ -403,21 +430,25 @@ local function meal_state()
 end
 
 -- ---------------------------------------------------------------------------
--- master data: meals, meal skills, random table, canteen menus
+-- data holders
 -- ---------------------------------------------------------------------------
 
-local data = { dining = nil, meals = {}, meal_by_index = {}, random = {}, skills = {}, lobby = {}, life_area = {} }
-
-local function resolve_chain()
-    local vm = safe(function() return sdk.get_managed_singleton("app.VariousDataManager") end)
-    if not vm then return nil, "no_various_manager" end
-    local setting = field_value(vm, "_Setting")
-    local facility = setting and field_value(setting, "_FacilitySetting")
-    local dining = facility and field_value(facility, "_FacilityDiningSetting")
-    if not dining then return nil, "no_dining_setting" end
-    data.dining = dining
-    return dining, "ok"
-end
+local data = {
+    dining_setting = nil,
+    facility_manager = nil,
+    dining = nil,
+    meals = {},
+    lobby_meals = {},
+    life_area_meals = {},
+    skills = {},
+    random = {},
+    lobby = {},
+    life_area = {},
+    lobby_cd = {},       -- menu value -> cData pointer (not serialised)
+    meal_cd = {},        -- meal index -> cData pointer
+    lobby_meal_cd = {},  -- lobby index -> cData pointer
+    area_meal_cd = {},   -- area index -> cData pointer
+}
 
 local function read_table(ud, max)
     local vals = table_values(ud)
@@ -438,36 +469,81 @@ local function read_table(ud, max)
     return out
 end
 
-local function dump_meals()
-    local dining, src = resolve_chain()
-    if not dining then return nil, src end
-
-    local meal_table = read_table(field_value(dining, "_MealData"), 80)
-    data.meals = {}
-    for i, cd in ipairs(meal_table.entries) do
-        local rec = {
-            index_table = i - 1,
-            index = safe_str(field_value(cd, "_Index")),
-            time = safe_str(field_value(cd, "_Time")),
-            health = safe_str(field_value(cd, "_Health")),
-            stamina = safe_str(field_value(cd, "_Stamina")),
-            attack = safe_str(field_value(cd, "_Attack")),
-            defence = safe_str(field_value(cd, "_Defence")),
-            attr_resist = safe_str(field_value(cd, "_AttrResist")),
-            portable_food = safe_str(field_value(cd, "_PortableFoodType")),
-            skills = array_values(call_method(cd, "get_MealSkill"), 12),
-            random_tables = array_values(call_method(cd, "get_RandomTable"), 8),
-        }
-        rec.skill_names = {}
-        for k, id in ipairs(rec.skills) do
-            rec.skill_names[k] = meal_skill_name(tonumber(id))
+local function record_summary(cd, kind, index_table)
+    local rec = primitive_summary(cd, 40)
+    rec.kind = kind
+    rec.index_table = index_table
+    rec.pointer = tostring(cd)
+    rec.skills = array_values(call_method(cd, "get_MealSkill"), 12)
+    rec.skill_names = {}
+    for i, id in ipairs(rec.skills) do
+        rec.skill_names[i] = meal_skill_name(tonumber(id) or 0)
+    end
+    rec.random_tables = array_values(call_method(cd, "get_RandomTable"), 8)
+    -- optional name guid (some records expose get_Name / get_MenuName)
+    for _, g in ipairs({ "get_Name", "get_MenuName", "getName", "get_MealName" }) do
+        local guid = safe(function() return cd:call(g) end)
+        if guid ~= nil then
+            local text = localized(guid)
+            if text then rec.name = text break end
         end
-        rec.pointer = tostring(cd)
-        data.meal_by_index[tostring(rec.index)] = cd
+    end
+    return rec
+end
+
+local function resolve_chain()
+    local vm = safe(function() return sdk.get_managed_singleton("app.VariousDataManager") end)
+    if not vm then return nil, "no_various_manager" end
+    local setting = field_value(vm, "_Setting")
+    local facility = setting and field_value(setting, "_FacilitySetting")
+    local dining_setting = facility and field_value(facility, "_FacilityDiningSetting")
+    if not dining_setting then return nil, "no_dining_setting" end
+    data.dining_setting = dining_setting
+
+    data.facility_manager = safe(function()
+        return sdk.get_managed_singleton("app.FacilityManager")
+    end)
+    data.dining = nil
+    if data.facility_manager then
+        data.dining = call_method(data.facility_manager, "get_Dining")
+            or field_value(data.facility_manager, "<Dining>k__BackingField")
+    end
+    return dining_setting, "ok"
+end
+
+local function dump_meals()
+    local dining_setting, src = resolve_chain()
+    if not dining_setting then return nil, src end
+
+    -- _MealData: the three base records (portable/field meal templates)
+    local meal_table = read_table(field_value(dining_setting, "_MealData"), 40)
+    data.meals, data.meal_cd = {}, {}
+    for i, cd in ipairs(meal_table.entries) do
+        local rec = record_summary(cd, "MealData", i - 1)
         data.meals[#data.meals + 1] = rec
+        data.meal_cd[tostring(rec._Index or rec.index_table)] = cd
     end
 
-    local skill_table = read_table(field_value(dining, "_MealSkill"), 80)
+    -- _MealDataLobby: the canteen menus
+    local lobby_table = read_table(field_value(dining_setting, "_MealDataLobby"), 40)
+    data.lobby_meals, data.lobby_meal_cd = {}, {}
+    for i, cd in ipairs(lobby_table.entries) do
+        local rec = record_summary(cd, "MealDataLobby", i - 1)
+        data.lobby_meals[#data.lobby_meals + 1] = rec
+        data.lobby_meal_cd[tostring(rec._Index or rec.index_table)] = cd
+    end
+
+    -- _MealDataLifeArea: camp meals per life area
+    local area_table = read_table(field_value(dining_setting, "_MealDataLifeArea"), 40)
+    data.life_area_meals, data.area_meal_cd = {}, {}
+    for i, cd in ipairs(area_table.entries) do
+        local rec = record_summary(cd, "MealDataLifeArea", i - 1)
+        data.life_area_meals[#data.life_area_meals + 1] = rec
+        data.area_meal_cd[tostring(rec._Index or rec.index_table)] = cd
+    end
+
+    -- meal skill names table
+    local skill_table = read_table(field_value(dining_setting, "_MealSkill"), 80)
     data.skills = {}
     for i, cd in ipairs(skill_table.entries) do
         local id = call_method(cd, "get_MealSkill")
@@ -479,7 +555,8 @@ local function dump_meals()
         }
     end
 
-    local random_table = read_table(field_value(dining, "_MealSkillRandomTable"), 120)
+    -- random table with weights
+    local random_table = read_table(field_value(dining_setting, "_MealSkillRandomTable"), 200)
     data.random = {}
     for i, cd in ipairs(random_table.entries) do
         local id = call_method(cd, "get_MealSkill")
@@ -497,20 +574,24 @@ local function dump_meals()
         }
     end
 
-    -- canteen menus: lobby (hub) and field camp life areas
-    local lobby_enum = first_enum({ "app.DiningDef.LOBBY_MENU_ID", "app.DiningDef.MENU_ID", "app.DiningDef.LOBBY_MENU" })
-    data.lobby = {}
+    -- canteen menu enum -> meal record
+    local lobby_enum = first_enum({
+        "app.DiningDef.LOBBY_MENU_ID", "app.DiningDef.MENU_ID", "app.DiningDef.LOBBY_MENU",
+    })
+    data.lobby, data.lobby_cd = {}, {}
     for _, e in ipairs(lobby_enum.entries) do
         local cd = static_value("app.MealUtil", "getMealDataLobby(app.DiningDef.LOBBY_MENU_ID)", e.value)
-        data.lobby[#data.lobby + 1] = {
+        local rec = {
             menu = e.name,
             menu_value = e.value,
-            meal_index = cd and safe_str(field_value(cd, "_Index")) or nil,
-            meal_time = cd and safe_str(field_value(cd, "_Time")) or nil,
             resolved = cd ~= nil,
+            meal = cd and primitive_summary(cd, 10) or nil,
         }
+        if cd ~= nil then data.lobby_cd[tostring(e.value)] = cd end
+        data.lobby[#data.lobby + 1] = rec
     end
 
+    -- field camp areas -> meal record
     local area_enum = first_enum({ "app.FieldDef.LIFE_AREA", "app.FieldDef.AREA" })
     data.life_area = {}
     for _, e in ipairs(area_enum.entries) do
@@ -518,18 +599,34 @@ local function dump_meals()
         data.life_area[#data.life_area + 1] = {
             area = e.name,
             area_value = e.value,
-            meal_index = cd and safe_str(field_value(cd, "_Index")) or nil,
-            active_minutes = safe_str(static_value("app.MealUtil", "getActiveMinutes(app.FieldDef.LIFE_AREA)", e.value)),
             resolved = cd ~= nil,
+            meal = cd and primitive_summary(cd, 10) or nil,
+            active_minutes = safe_str(static_value("app.MealUtil",
+                "getActiveMinutes(app.FieldDef.LIFE_AREA)", e.value)),
         }
     end
 
-    local dining_inst = safe(function() return sdk.get_managed_singleton("app.FacilityDining") end)
-    local info = dining_inst and call_method(dining_inst, "get_MealInfo")
+    local info = data.dining and (call_method(data.dining, "get_MealInfo")
+        or field_value(data.dining, "<MealInfo>k__BackingField"))
     local out = {
+        facility_manager = data.facility_manager ~= nil,
+        facility_dining = data.dining ~= nil,
+        dining_type = type_name(data.dining),
+        dining_is_meal_effect_set = data.dining and safe_str(field_value(data.dining, "_IsMealEffectSet")) or nil,
+        dining_enable_eat = data.dining and safe_str(call_method(data.dining, "EnableEat")) or nil,
+        dining_ticket_item = data.dining and safe_str(field_value(data.dining, "<TicketItem>k__BackingField")) or nil,
+        dining_life_area_effect = data.dining
+            and tostring(field_value(data.dining, "<LifeAreaMealEffect>k__BackingField")) or nil,
+        meal_info = info and { type = type_name(info), values = primitive_summary(info, 30) } or nil,
         meal_table_count = meal_table.count,
         meal_fetch_ok = meal_table.fetch_ok,
         meals = data.meals,
+        lobby_table_count = lobby_table.count,
+        lobby_fetch_ok = lobby_table.fetch_ok,
+        lobby_meals = data.lobby_meals,
+        area_table_count = area_table.count,
+        area_fetch_ok = area_table.fetch_ok,
+        life_area_meals = data.life_area_meals,
         skill_table_count = skill_table.count,
         skills = data.skills,
         random_table_count = random_table.count,
@@ -538,21 +635,6 @@ local function dump_meals()
         lobby = data.lobby,
         life_area_enum = area_enum,
         life_area = data.life_area,
-        facility_dining = dining_inst ~= nil,
-        meal_info = info and {
-            type = type_name(info),
-            fields = (function()
-                local f = {}
-                local td = safe(function() return info:get_type_definition() end)
-                for _, fd in ipairs(safe(function() return td and td:get_fields() end) or {}) do
-                    local n = safe(function() return fd:get_name() end)
-                    local is_static = safe(function() return fd:is_static() end)
-                    local v = safe(function() return fd:get_data(is_static and nil or info) end)
-                    if n and is_primitive(v) then f[n] = v end
-                end
-                return f
-            end)(),
-        } or nil,
     }
     return out
 end
@@ -566,26 +648,28 @@ local function dump_master()
         return
     end
     dump_json(OUT_MASTER, out)
-    lastStatus = string.format("master: %s meals, %s skills, %s random lines, %d menus -> %s",
-        tostring(out.meal_table_count), tostring(out.skill_table_count),
-        tostring(out.random_table_count), #out.lobby, OUT_MASTER)
+    lastStatus = string.format("master: meals=%s lobby=%s area=%s skills=%s random=%s dining=%s -> %s",
+        tostring(out.meal_table_count), tostring(out.lobby_table_count),
+        tostring(out.area_table_count), tostring(out.skill_table_count),
+        tostring(out.random_table_count), tostring(out.facility_dining), OUT_MASTER)
     log.info("[MealApplyProbe2] " .. lastStatus)
     return out
 end
 
 -- ---------------------------------------------------------------------------
--- types (small, targeted list for the apply path)
+-- types
 -- ---------------------------------------------------------------------------
 
 local TYPES = {
     "app.cHunterMealEffect", "app.cMealEffect", "app.cHunterMealSkillParamInfo",
-    "app.FacilityDining", "app.cMealMySetUse", "app.MealUtil", "app.MealDef",
-    "app.DiningDef", "app.FieldDef", "app.savedata.cDiningParam",
+    "app.FacilityDining", "app.FacilityManager", "app.cMealMySetUse", "app.MealUtil",
+    "app.MealDef", "app.DiningDef", "app.FieldDef", "app.savedata.cDiningParam",
     "app.user_data.MealData", "app.user_data.MealData.cData",
+    "app.user_data.MealDataLobby", "app.user_data.MealDataLobby.cData",
+    "app.user_data.MealDataLifeArea", "app.user_data.MealDataLifeArea.cData",
     "app.user_data.MealSkillData", "app.user_data.MealSkillData.cData",
     "app.user_data.MealSkillRandomTable", "app.user_data.MealSkillRandomTable.cData",
     "app.user_data.FacilityDiningSetting", "app.user_data.FacilitySetting",
-    "app.user_data.VariousDataManagerSetting",
 }
 
 local ENUMS = {
@@ -615,10 +699,8 @@ local function dump_type(typeName)
             params[#params + 1] = safe_str(safe(function() return pts[i]:get_full_name() end)) or "?"
         end
         e.methods[#e.methods + 1] = (safe(function() return m:get_name() end) or "?")
-            .. "(" .. table.concat(params, ", ") .. ")"
-            .. " -> " .. tostring(safe(function()
-                return m:get_return_type():get_full_name()
-            end))
+            .. "(" .. table.concat(params, ", ") .. ") -> "
+            .. tostring(safe(function() return m:get_return_type():get_full_name() end))
     end
     return e
 end
@@ -644,12 +726,16 @@ end
 
 local attempts = {}
 local menu_index = 1
-local last_built = nil
+local add_randoms = true
 
 local function current_menu()
-    if #data.lobby == 0 then return nil end
-    if menu_index > #data.lobby then menu_index = 1 end
-    return data.lobby[menu_index]
+    local list = {}
+    for _, m in ipairs(data.lobby) do
+        if m.resolved then list[#list + 1] = m end
+    end
+    if #list == 0 then return nil end
+    if menu_index > #list then menu_index = 1 end
+    return list[menu_index], #list
 end
 
 local function record_attempt(rec)
@@ -658,63 +744,93 @@ local function record_attempt(rec)
     dump_json(OUT_APPLY, { attempts = attempts, menu_index = menu_index })
 end
 
--- A) the facility's own state apply: no eat event, no item consumption.
+local COPY_SIGNATURES = {
+    MealData = "copyFrom(app.user_data.MealData.cData, System.Boolean)",
+    MealDataLobby = "copyFrom(app.user_data.MealDataLobby.cData, System.Boolean)",
+    MealDataLifeArea = "copyFrom(app.user_data.MealDataLifeArea.cData, System.Boolean)",
+}
+
+-- A) facility path: the facility applies the meal itself. No eat event, no
+--    item consumption.
 local function apply_menu()
-    if #data.lobby == 0 then
-        local ok, err = pcall(dump_meals)
-        if not ok then note_error("dump_meals", err) end
-    end
-    local menu = current_menu()
+    if #data.lobby == 0 then pcall(dump_meals) end
+    local menu, total = current_menu()
     if menu == nil then
-        lastStatus = "apply menu: no lobby menu resolved (press Dump master data)"
+        lastStatus = "apply menu: no resolved lobby menu (press Dump master data)"
         return
     end
-    local dining = safe(function() return sdk.get_managed_singleton("app.FacilityDining") end)
+    local dining = data.dining
     local rec = {
         action = "setMealEffectLobby",
         menu = menu.menu,
         menu_value = menu.menu_value,
-        facility_dining = dining ~= nil,
+        dining_present = dining ~= nil,
         before = meal_state(),
     }
     if dining == nil then
-        rec.fail = "no_facility_dining_singleton"
+        rec.fail = "no_dining_instance (FacilityManager:get_Dining returned nil)"
         record_attempt(rec)
-        lastStatus = "apply menu: app.FacilityDining singleton not found"
+        lastStatus = "apply menu: " .. tostring(rec.fail)
         return
     end
-    local enable = call_method(dining, "EnableEat")
-    rec.enable_eat = safe_str(enable)
+    rec.enable_eat = safe_str(call_method(dining, "EnableEat"))
+    rec.is_meal_effect_set = safe_str(field_value(dining, "_IsMealEffectSet"))
     local ok, err = call_void(dining,
         "setMealEffectLobby(app.DiningDef.LOBBY_MENU_ID)", menu.menu_value)
     rec.call_ok = ok
     rec.call_error = err
     rec.after = meal_state()
-    pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {}, out = { attempts = attempts } }
+    pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {} }
     record_attempt(rec)
-    lastStatus = string.format("apply menu '%s': call=%s", tostring(menu.menu), tostring(rec.call_ok))
+    lastStatus = string.format("apply menu %s (%d/%d): call=%s",
+        tostring(menu.menu), menu_index, total, tostring(ok))
     log.info("[MealApplyProbe2] " .. lastStatus)
 end
 
--- B) build the effect ourselves, then hand it to the hunter.
-local function build_effect(meal_rec, add_randoms)
-    local cdata = data.meal_by_index[tostring(meal_rec.index)]
-    if cdata == nil then return nil, "no_cdata_for_meal_index" end
-    local effect = safe(function() return sdk.create_instance("app.cMealEffect") end)
-    if effect == nil then return nil, "no_instance" end
-    safe(function() effect:add_ref() end)
-
-    local copied, copy_err = call_void(effect,
-        "copyFrom(app.user_data.MealData.cData, System.Boolean)", cdata, false)
-    if not copied then
-        -- the bool may mean "lobby/life area"; try the other value once
-        copied, copy_err = call_void(effect,
-            "copyFrom(app.user_data.MealData.cData, System.Boolean)", cdata, true)
+-- B) build the effect from the menu's record, add its random buffs, attach it.
+local function build_and_apply()
+    if #data.lobby == 0 then pcall(dump_meals) end
+    local menu, total = current_menu()
+    if menu == nil then
+        lastStatus = "build: no resolved lobby menu"
+        return
     end
-    local built = effect_summary(effect)
+    local cd = data.lobby_cd[tostring(menu.menu_value)]
+    if cd == nil then
+        cd = static_value("app.MealUtil", "getMealDataLobby(app.DiningDef.LOBBY_MENU_ID)", menu.menu_value)
+    end
+    if cd == nil then
+        lastStatus = "build: menu record not resolved"
+        return
+    end
+
+    local rec = {
+        action = "build_and_apply",
+        menu = menu.menu,
+        menu_value = menu.menu_value,
+        random_buffs = add_randoms,
+        record = primitive_summary(cd, 20),
+        before = meal_state(),
+    }
+
+    local effect = safe(function() return sdk.create_instance("app.cMealEffect") end)
+    if effect == nil then
+        rec.fail = "no_instance:cMealEffect"
+        record_attempt(rec)
+        lastStatus = rec.fail
+        return
+    end
+    safe(function() effect:add_ref() end)
+    rec.effect_pointer = tostring(effect)
+
+    local copy_sig = COPY_SIGNATURES.MealDataLobby
+    local copied, copy_err = call_void(effect, copy_sig, cd, false)
+    rec.copy = { ok = copied, error = copy_err, signature = copy_sig }
+    rec.effect_after_copy = effect_summary(effect)
+
     local added, add_errors = 0, {}
     if add_randoms then
-        for _, tbl in ipairs(meal_rec.random_tables or {}) do
+        for _, tbl in ipairs(array_values(call_method(cd, "get_RandomTable"), 8)) do
             local num = tonumber(tbl)
             if num then
                 local ok, err = call_void(effect,
@@ -723,105 +839,88 @@ local function build_effect(meal_rec, add_randoms)
             end
         end
     end
-    local after = effect_summary(effect)
-    return effect, nil, {
-        copied = copied,
-        copy_error = copy_err,
-        random_added = added,
-        random_errors = add_errors,
-        built = built,
-        after_randoms = after,
-    }
-end
-
-local function build_and_apply()
-    if #data.lobby == 0 then
-        local ok, err = pcall(dump_meals)
-        if not ok then note_error("dump_meals", err) end
-    end
-    local menu = current_menu()
-    if menu == nil then
-        lastStatus = "build: no lobby menu resolved"
-        return
-    end
-    -- the meal record for this menu, matched by _Index
-    local meal_rec = nil
-    for _, rec in ipairs(data.meals) do
-        if tostring(rec.index) == tostring(menu.meal_index) then meal_rec = rec break end
-    end
-    if meal_rec == nil then
-        lastStatus = "build: menu meal index not in _MealData"
-        return
-    end
-
-    local rec = {
-        action = "build_and_apply",
-        menu = menu.menu,
-        menu_value = menu.menu_value,
-        meal_index = meal_rec.index,
-        before = meal_state(),
-    }
-    local effect, err, info = build_effect(meal_rec, true)
-    if effect == nil then
-        rec.fail = err
-        record_attempt(rec)
-        lastStatus = "build: " .. tostring(err)
-        return
-    end
-    rec.build = info
-    last_built = { effect = effect, meal = meal_rec, info = info }
+    rec.random_added = added
+    rec.random_errors = add_errors
+    rec.effect_after_randoms = effect_summary(effect)
 
     local meal, msrc = meal_object()
     if not meal then
         rec.fail = "no_meal_object:" .. tostring(msrc)
         record_attempt(rec)
-        lastStatus = "build: " .. tostring(rec.fail)
+        lastStatus = rec.fail
         return
     end
-
-    local attach, attach_err = call_void(meal,
+    local attached, attach_err = call_void(meal,
         "setMealEffect(app.cMealEffect, System.Boolean)", effect, false)
-    rec.attach_ok = attach
-    rec.attach_error = attach_err
-    local seconds = tonumber(meal_rec.time)
-    if seconds and seconds > 0 then
-        local ok, err = call_void(meal, "setDurationTimer(System.Single)", seconds * 60)
-        rec.timer_ok = ok
-        rec.timer_error = err
-    end
-    local t1, e1 = call_void(meal, "setTimerActive(System.Boolean)", true)
-    local t2, e2 = call_void(meal, "setEffectActive(System.Boolean)", true)
-    rec.timer_active_ok = t1
-    rec.effect_active_ok = t2
-    rec.active_errors = { timer = e1, effect = e2 }
+    rec.attach = { ok = attached, error = attach_err }
+    rec.after_attach = meal_state()
+
+    -- timer: the record's _Time is minutes; mirror the real eat (70 min)
+    local minutes = tonumber(rec.record._Time) or 70
+    local timer_ok, timer_err = call_void(meal, "setDurationTimer(System.Single)", minutes * 60)
+    local timer_active_ok, timer_active_err = call_void(meal, "setTimerActive(System.Boolean)", true)
+    local effect_active_ok, effect_active_err = call_void(meal, "setEffectActive(System.Boolean)", true)
+    rec.timer = {
+        minutes = minutes,
+        duration_ok = timer_ok, duration_error = timer_err,
+        timer_active_ok = timer_active_ok, timer_active_error = timer_active_err,
+        effect_active_ok = effect_active_ok, effect_active_error = effect_active_err,
+    }
     rec.after = meal_state()
-    pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {}, out = { attempts = attempts } }
+    pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {} }
     record_attempt(rec)
-    lastStatus = string.format("build+apply '%s': skills=%s attach=%s",
-        tostring(menu.menu), tostring(info.after_randoms and #info.after_randoms.skills or 0),
-        tostring(rec.attach_ok))
+    lastStatus = string.format("build+apply %s: copy=%s randoms=%d attach=%s",
+        tostring(menu.menu), tostring(copied), added, tostring(attached))
     log.info("[MealApplyProbe2] " .. lastStatus)
 end
 
-local function cycle_menu(delta)
-    if #data.lobby == 0 then
-        local ok, err = pcall(dump_meals)
-        if not ok then note_error("dump_meals", err) end
-    end
-    if #data.lobby == 0 then
-        lastStatus = "no lobby menus (press Dump master data)"
+-- C) build only: shows what copyFrom + randoms produce before any attach.
+local function build_only()
+    if #data.lobby == 0 then pcall(dump_meals) end
+    local menu = current_menu()
+    if menu == nil then
+        lastStatus = "build only: no resolved lobby menu"
         return
     end
-    menu_index = ((menu_index - 1 + delta) % #data.lobby) + 1
-    local m = data.lobby[menu_index]
-    lastStatus = string.format("menu %d/%d: %s (meal index %s)",
-        menu_index, #data.lobby, tostring(m.menu), tostring(m.meal_index))
+    local cd = data.lobby_cd[tostring(menu.menu_value)]
+    if cd == nil then
+        lastStatus = "build only: menu record not resolved"
+        return
+    end
+    local effect = safe(function() return sdk.create_instance("app.cMealEffect") end)
+    if effect == nil then
+        lastStatus = "build only: create_instance failed"
+        return
+    end
+    safe(function() effect:add_ref() end)
+    local rec = {
+        action = "build_only",
+        menu = menu.menu,
+        menu_value = menu.menu_value,
+        record = primitive_summary(cd, 20),
+        before = meal_state(),
+    }
+    rec.copy = { ok = call_void(effect, COPY_SIGNATURES.MealDataLobby, cd, false) }
+    rec.effect_after_copy = effect_summary(effect)
+    local added = 0
+    for _, tbl in ipairs(array_values(call_method(cd, "get_RandomTable"), 8)) do
+        local num = tonumber(tbl)
+        if num then
+            local ok = call_void(effect, "addRandomTableParam(app.MealDef.RANDOM_SKILL_TBL_Fixed)", num)
+            if ok then added = added + 1 end
+        end
+    end
+    rec.random_added = added
+    rec.effect_after_randoms = effect_summary(effect)
+    record_attempt(rec)
+    lastStatus = string.format("build only %s: skills %s -> %s, randoms=%d",
+        tostring(menu.menu),
+        tostring(rec.effect_after_copy.fields.SKILL_NUM),
+        tostring(rec.effect_after_randoms.fields.SKILL_NUM), added)
+    log.info("[MealApplyProbe2] " .. lastStatus)
 end
 
-local ACTIONS = {
-    menu = apply_menu,
-    build = build_and_apply,
-}
+local ACTIONS = { menu = apply_menu, build = build_and_apply, dry = build_only }
 
 local function request_action(name)
     if ACTIONS[name] == nil then return end
@@ -831,6 +930,19 @@ local function request_action(name)
     end
     pending_action = name
     lastStatus = "queued: " .. name .. " (runs next frame)"
+end
+
+local function cycle_menu(delta)
+    if #data.lobby == 0 then pcall(dump_meals) end
+    local _, total = current_menu()
+    if total == nil then
+        lastStatus = "no resolved menus (press Dump master data)"
+        return
+    end
+    menu_index = ((menu_index - 1 + delta) % total) + 1
+    local m = current_menu()
+    lastStatus = string.format("menu %d/%d: %s (record %s)",
+        menu_index, total, tostring(m and m.menu), tostring(m and m.meal and m.meal._Index))
 end
 
 -- ---------------------------------------------------------------------------
@@ -857,8 +969,7 @@ local function on_frame()
         end
     end
     if #pending_verify.done >= #pending_verify.frames then
-        local out = { attempts = attempts, verify = pending_verify.readings }
-        dump_json(OUT_APPLY, out)
+        dump_json(OUT_APPLY, { attempts = attempts, verify = pending_verify.readings })
         pending_verify = nil
         lastStatus = "verification written -> " .. OUT_APPLY
         log.info("[MealApplyProbe2] " .. lastStatus)
@@ -886,7 +997,7 @@ end
 
 local function draw_ui()
     if not imgui.tree_node("Meal Apply Probe 2 v" .. PROBE_VERSION) then return end
-    imgui.text("phase 2: meal master data + game apply path (no hooks)")
+    imgui.text("phase 2: meal tables + game apply path (no hooks)")
     imgui.text(hunter_line())
     imgui.separator()
 
@@ -901,22 +1012,28 @@ local function draw_ui()
     end
 
     imgui.separator()
-    local menu = current_menu()
-    imgui.text(string.format("menu %d/%d: %s  (meal index %s, time %s min)",
-        menu_index, #data.lobby,
+    local menu, total = current_menu()
+    imgui.text(string.format("menu %d/%d: %s  (record %s)",
+        menu_index, total or 0,
         menu and tostring(menu.menu) or "?",
-        menu and tostring(menu.meal_index) or "?",
-        menu and tostring(menu.meal_time) or "?"))
+        menu and tostring(menu.meal and menu.meal._Index) or "?"))
     if imgui.button("< Prev menu") then cycle_menu(-1) end
     imgui.same_line()
     if imgui.button("Next menu >") then cycle_menu(1) end
+    imgui.same_line()
+    if imgui.button(add_randoms and "Randoms: on" or "Randoms: off") then
+        add_randoms = not add_randoms
+    end
 
     imgui.separator()
-    if imgui.button("Apply menu (facility path)") then request_action("menu") end
+    if imgui.button("Apply menu (facility)") then request_action("menu") end
     imgui.same_line()
     if imgui.button("Build + apply") then request_action("build") end
-    imgui.text(string.format("meals=%d skills=%d random=%d attempts=%d",
-        #data.meals, #data.skills, #data.random, #attempts))
+    imgui.same_line()
+    if imgui.button("Build only") then request_action("dry") end
+    imgui.text(string.format("meals=%d lobby=%d area=%d skills=%d random=%d attempts=%d",
+        #data.meals, #data.lobby_meals, #data.life_area_meals,
+        #data.skills, #data.random, #attempts))
 
     imgui.separator()
     imgui.text("status: " .. tostring(lastStatus))
@@ -928,10 +1045,10 @@ local function draw_ui()
         imgui.text("errors: " .. tostring(#errors) .. " (last: " .. errors[#errors].where .. ")")
     end
     imgui.separator()
-    imgui.text("1) Dump types, then Dump master data (read-only).")
-    imgui.text("2) Cycle to a menu you know, then 'Apply menu'.")
-    imgui.text("3) If nothing changed, press 'Build + apply'.")
-    imgui.text("4) Check max HP/stamina, attack/defence and the food skills.")
+    imgui.text("1) Dump types, Dump master data (read-only).")
+    imgui.text("2) Cycle to a menu, press Build only to see the effect values.")
+    imgui.text("3) Press Build + apply; check HP/stamina/attack/defence/skills.")
+    imgui.text("4) Try Apply menu (facility) too, and repeat in a quest at camp.")
     imgui.tree_pop()
 end
 
@@ -947,7 +1064,7 @@ if not ALREADY_LOADED then
         if not ok then note_error("draw_ui", err) end
     end)
     log.info("[MealApplyProbe2] loaded v" .. tostring(PROBE_VERSION)
-        .. " (master data + apply path; no hooks)")
+        .. " (meal tables + apply path; no hooks)")
 else
     log.info("[MealApplyProbe2] duplicate load ignored")
 end

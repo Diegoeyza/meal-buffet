@@ -108,6 +108,10 @@ balance mod.
   fallback is refused for writes.
 - If a game patch renames an internal field, the probe records a per-field miss
   instead of erroring — a patch may still need a mod update for full function.
+- Syntax gate: the scripts run under LuaJIT (Lua 5.1). Check a change with a
+  real Lua 5.1 compiler, not only a modern Lua parser — 5.4-only syntax, and
+  even a nested `...`, passes most parsers and fails to load in game
+  (`cannot use '...' outside a vararg function`).
 
 ## Credits & license
 

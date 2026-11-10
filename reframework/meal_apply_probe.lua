@@ -135,13 +135,17 @@ local function call_method(obj, name)
     return safe(function() return m:call(obj) end)
 end
 
-local function typecall(typeName, methodName, obj, ...)
+-- typecall is only ever called with (type, method, object): no varargs, so the
+-- call closure does not need to forward any. (Using `...` inside a nested
+-- closure is a LuaJIT compile error: "cannot use '...' outside a vararg
+-- function".)
+local function typecall(typeName, methodName, obj)
     local td = safe(sdk.find_type_definition, typeName)
     if not td then return nil end
     local m = safe(function() return td:get_method(methodName .. "()") end)
         or safe(function() return td:get_method(methodName) end)
     if not m then return nil end
-    return safe(function() return m:call(obj, ...) end)
+    return safe(function() return m:call(obj) end)
 end
 
 -- Field descriptor read: obj:get_field() returns nil for several Hunter/Wilds

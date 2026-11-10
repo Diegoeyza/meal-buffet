@@ -1,6 +1,6 @@
 # Meal Buffet
 
-> **Status: v0.1.0.** The apply path is verified on the current build: the mod
+> **Status: v0.1.1.** The apply path is verified on the current build: the mod
 > builds the meal with the game's own `app.cMealEffect` and hands it to the
 > hunter. Verified in game that the applied meal lists the same food skills as
 > a real canteen meal. Mid-quest use still needs an explicit test.
@@ -72,7 +72,7 @@ Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
 ## Status
 
-v0.1.0. Apply works and the food-skill list matches a real meal. Verified in the
+v0.1.1. Apply works, the food-skill list matches a real meal, and the panel shows a short description of every active or picked meal skill. Verified in the
 hub; mid-quest still needs a test. Treat it as a single-player / co-op
 convenience tool rather than a balance mod.
 

@@ -1,6 +1,6 @@
-# Nexus page — Meal Buffet v0.1.0
+# Nexus page — Meal Buffet v0.1.1
 
-Upload `dist/MealBuffet-0.1.0.zip` as the main file.
+Upload `dist/MealBuffet-0.1.1.zip` as the main file.
 
 The Nexus mod description field uses **BBCode** (not Markdown). Paste the block
 below straight into the Description field (BBCode/source view).
@@ -36,7 +36,7 @@ The meal you are currently under (its buff, its timer and its extra food skills)
 
 [list]
 [*][b]Meal list[/b] — every base meal the game defines, read from the game's own master data at runtime. Nothing is hardcoded, so meals added by a title update appear without a mod update.
-[*][b]Extra skills[/b] — pick the random meal skills yourself, or reroll them until you like the set.
+[*][b]Extra skills[/b] — pick the random meal skills yourself, or reroll them until you like the set. Each active or picked skill is listed with a short description of what it does.
 [*][b]Apply[/b] — puts the selected meal on your hunter immediately.
 [*]No canteen trip and no Meal Voucher spent. Your ingredients are untouched.
 [/list]

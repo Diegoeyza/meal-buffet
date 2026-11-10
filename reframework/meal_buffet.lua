@@ -35,7 +35,7 @@ local log = log
 local imgui = imgui
 local unpack = unpack or table.unpack
 
-local VERSION = "0.1.0"
+local VERSION = "0.1.1"
 local CONFIG_FILE = "meal_buffet.json"
 
 local ALREADY_LOADED = _G.MEAL_BUFFET_LOADED == true
@@ -240,6 +240,22 @@ end
 
 local skill_name_cache = {}
 
+local function localized(guid)
+    resolve_text_helpers()
+    if guid == nil or get_message_m == false then return nil end
+    return safe(function() return get_message_m:call(nil, guid) end)
+end
+
+-- One line, at most `max` characters: descriptions come from the game's
+-- message table and can be long.
+local function short(text, max)
+    if text == nil then return nil end
+    local t = tostring(text):gsub("%s+", " ")
+    max = max or 110
+    if #t > max then t = t:sub(1, max - 3) .. "..." end
+    return t
+end
+
 local function meal_skill_name(id)
     local key = tostring(id)
     if skill_name_cache[key] ~= nil then return skill_name_cache[key] end
@@ -368,6 +384,23 @@ local function load_data()
         table.insert(data.pool_by_table[key], rec)
     end
 
+    -- meal skill table: id -> name + description (the mod shows the text of
+    -- the extra buffs, which keeps the picker readable)
+    local skill_table = read_table(field_value(dining, "_MealSkill"), 200)
+    data.skill_info = {}
+    for _, cd in ipairs(skill_table.entries) do
+        local id = call_method(cd, "get_MealSkill")
+        local key = tostring(safe_str(id))
+        if id ~= nil then
+            local guid = call_method(cd, "get_Explain")
+            data.skill_info[key] = {
+                id = tonumber(safe_str(id)),
+                name = meal_skill_name(tonumber(safe_str(id)) or 0),
+                desc = guid and localized(guid) or nil,
+            }
+        end
+    end
+
     -- canteen menu enum -> meal record
     local menu_names = enum_names("app.DiningDef.LOBBY_MENU_ID")
     data.meals, data.by_menu = {}, {}
@@ -412,6 +445,7 @@ end
 local sel_meal = 1
 local slots = {}          -- per slot: -1 = game roll, 0 = none, n = pool index
 local randoms_enabled = true
+local descriptions_on = true
 
 local function selected_meal()
     if #data.meals == 0 then return nil end
@@ -450,6 +484,7 @@ local function load_config()
         end
     end
     if type(cfg.randoms_enabled) == "boolean" then randoms_enabled = cfg.randoms_enabled end
+    if type(cfg.descriptions) == "boolean" then descriptions_on = cfg.descriptions end
 end
 
 local function save_config()
@@ -458,6 +493,7 @@ local function save_config()
             meal = sel_meal,
             slots = { slots[1] or -1, slots[2] or -1, slots[3] or -1, slots[4] or -1 },
             randoms_enabled = randoms_enabled,
+            descriptions = descriptions_on,
         })
     end)
 end
@@ -465,6 +501,12 @@ end
 -- ---------------------------------------------------------------------------
 -- current meal readout
 -- ---------------------------------------------------------------------------
+
+local function skill_description(id)
+    if id == nil or data.skill_info == nil then return nil end
+    local rec = data.skill_info[tostring(id)]
+    return rec and rec.desc or nil
+end
 
 local function current_skills()
     local meal = meal_object()
@@ -475,7 +517,10 @@ local function current_skills()
     for _, id in ipairs(array_values(field_value(effect, "_SkillEnum"), 8)) do
         local num = tonumber(id)
         if num and num ~= 0 then
-            out[#out + 1] = meal_skill_name(num) or ("skill " .. tostring(num))
+            out[#out + 1] = {
+                id = num,
+                name = meal_skill_name(num) or ("skill " .. tostring(num)),
+            }
         end
     end
     return out
@@ -626,11 +671,13 @@ local function on_frame()
     verify_pending.count = verify_pending.count + 1
     if verify_pending.count >= verify_pending.frames then
         verify_pending = nil
-        local names = current_skills()
+        local active = current_skills()
         local meal = meal_object()
-        if meal and #names > 0 then
+        if meal and #active > 0 then
+            local names = {}
+            for _, rec in ipairs(active) do names[#names + 1] = rec.name end
             lastStatus = string.format("confirmed: %d skills active (%s)",
-                #names, table.concat(names, ", "))
+                #active, table.concat(names, ", "))
         end
     end
 end
@@ -665,7 +712,12 @@ local function draw_ui()
     imgui.text(current_line())
     local active = current_skills()
     if #active > 0 then
-        imgui.text("active skills: " .. table.concat(active, ", "))
+        imgui.text("active skills:")
+        for _, rec in ipairs(active) do
+            imgui.text("   " .. rec.name)
+            local d = descriptions_on and skill_description(rec.id) or nil
+            if d then imgui.text("      " .. short(d, 130)) end
+        end
     else
         imgui.text("active skills: (none)")
     end
@@ -703,6 +755,11 @@ local function draw_ui()
         randoms_enabled = not randoms_enabled
         save_config()
     end
+    imgui.same_line()
+    if imgui.button(descriptions_on and "Descriptions: on" or "Descriptions: off") then
+        descriptions_on = not descriptions_on
+        save_config()
+    end
     imgui.text("extra buffs (one per slot):")
     for i, _ in ipairs(meal.random_tables or {}) do
         imgui.text("   slot " .. i .. ": " .. slot_label(meal, i))
@@ -723,6 +780,12 @@ local function draw_ui()
             if pick > #pool then pick = -1 end
             slots[i] = pick
             save_config()
+        end
+        local pick = slots[i] or -1
+        if descriptions_on and pick > 0 then
+            local rec = meal_pool(meal)[pick]
+            local d = rec and skill_description(rec.skill) or nil
+            if d then imgui.text("      " .. short(d, 130)) end
         end
     end
 

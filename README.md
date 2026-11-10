@@ -1,47 +1,58 @@
 # Meal Buffet
 
-> **Status: v0.1.1.** The apply path is verified on the current build: the mod
-> builds the meal with the game's own `app.cMealEffect` and hands it to the
-> hunter. Verified in game that the applied meal lists the same food skills as
-> a real canteen meal. Mid-quest use still needs an explicit test.
+> **Status: v0.1.1.** Apply verified in game: the meal builder uses the game's
+> own `app.cMealEffect`, and the applied meal lists the same food skills as a
+> real canteen meal. Mid-quest use needs an explicit test.
 
-**A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal buff
-to your own hunter on demand, from the REFramework menu — no walk to the
-canteen, no Meal Voucher, no ingredients spent.
+**A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal to your
+own hunter on demand, from the REFramework menu — no walk to the canteen, no
+Meal Voucher, no ingredients spent.
 
-Pick one of the game's base meals, pick or reroll the extra meal skills, press
-**Apply**. Works in the hub, at camp, and mid-quest.
+Pick a meal set, choose or reroll the two extra buffs, press **Apply**. Works in
+the hub, at camp, and during a quest.
+
+## Replaces Meal Stripper
+
+Meal Buffet includes the same one-click meal strip: the **Clear meal** button.
+It also removes the need to strip before eating again — applying a new meal
+replaces the active one directly. Remove Meal Stripper if it is installed.
 
 ## What it does
 
-- **Any base meal**: the list is enumerated from the game's own meal master
-  data at runtime, so nothing is hardcoded and meals added by a title update
-  show up on their own.
-- **Extra skills on demand**: pick the random meal skills yourself, or reroll
-  them until you get the set you want.
-- **Apply anywhere**: hub, camp, or an active quest. No canteen visit.
-- **No cost**: no Meal Voucher, no ingredients.
+- **Every meal set**: the list is enumerated from the game's own meal master
+  data (Kunafa, Azuz, Slid, Suja and the special/event sets), so nothing is
+  hardcoded and meals added by a title update show up on their own.
+- **Fixed skills, by name**: each set's three regular food skills are listed.
+- **Two extra buffs, under your control**: each slot can use the game's own
+  weighted roll, be set to nothing, or be a specific buff from that meal's pool.
+- **Skill descriptions**: every active or picked skill is shown with a short
+  line describing what it does (toggleable).
+- **Clear meal**: removes the active meal (max HP/stamina, attack/defence, food
+  skills, timer and flags) — the Meal Stripper behaviour.
+- **No cost**: no Meal Voucher, no ingredients, no canteen visit.
+- **Remembers the selection**: saved to `reframework/data/meal_buffet.json`.
 
 ## How it works
 
-Working hypothesis, being verified by the probe: the active meal — buff, timer,
-and extra food skills — is a small state block on your local hunter,
-`app.cHunterMealEffect`.
+The active meal is `app.cHunterMealEffect` on the local hunter; the meal
+definition itself is an `app.cMealEffect` attached to it.
 
-- Base meals and their skill pools are read from the game's meal master data at
-  runtime, not from a table in the script.
-- **Apply** will first try the game's own meal apply path, so the result is the
-  same state the canteen would produce. If that path is unavailable in the
-  current context, the mod falls back to writing the meal state fields on
-  `app.cHunterMealEffect` directly.
-- Development is probe-first: `reframework/meal_apply_probe.lua` (not packaged)
-  dumps the meal types and the master-data entries, captures the game's own eat
-  calls, and verifies that re-written meal fields survive the next frames.
-- Only your own (user-controlled) hunter is ever selected for writes; other
-  players are never touched. The master-player fallback is refused for writes.
-  No save data is written, no game files are modified, nothing talks to the
-  network.
-- Every SDK call is `pcall`-guarded.
+Per apply, the mod:
+
+1. reads the chosen canteen set from
+   `app.user_data.MealDataLobby` (via `app.MealUtil.getMealDataLobby`),
+2. creates a fresh `app.cMealEffect` and fills it with
+   `copyFrom(app.user_data.MealDataLobby.cData, false)`,
+3. adds the extra buffs with `addRandomTableParam(tableId)` (the game's own
+   weighted roll) or `addRandomData(record)` (an exact pick),
+4. hands it to the hunter with `cHunterMealEffect:setMealEffect(effect, false)`,
+5. writes the end state a real canteen eat leaves behind:
+   `_DurationTimer = _TimerMax = minutes * 60`, both active flags true.
+
+Meal sets, fixed skills and the buff pool are read from game master data at
+runtime. Only the user-controlled hunter is ever targeted. No save data is
+written, no game files are modified, nothing talks to the network, and every SDK
+call is `pcall`-guarded.
 
 ## Requirements
 
@@ -61,20 +72,27 @@ and extra food skills — is a small state block on your local hunter,
 (`meal-buffet-<version>.zip`) and a `MealBuffet-<version>.zip` laid out for the
 game folder (Nexus/Vortex).
 
-## Usage (planned)
+## Usage
 
 1. REFramework menu (Insert) → **Script Generated UI** → **Meal Buffet**.
-2. Pick a base meal.
-3. Pick the extra meal skills, or reroll them.
-4. Press **Apply**. The meal buff lands on your hunter immediately.
+2. `< Prev` / `Next >` pick a meal set. Base stats and fixed skills are listed.
+3. For each extra buff slot, `<` / `>` cycles `game roll` → `none` → each
+   specific buff; picked buffs show their description.
+4. Press **Apply meal**. The `active skills` list shows what landed.
+5. Press **Clear meal** to remove the active meal.
 
 Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
-## Status
+## Status and limits
 
-v0.1.1. Apply works, the food-skill list matches a real meal, and the panel shows a short description of every active or picked meal skill. Verified in the
-hub; mid-quest still needs a test. Treat it as a single-player / co-op
-convenience tool rather than a balance mod.
+v0.1.1. Apply and Clear are verified in the hub; the food-skill list matches a
+real meal. Applying during a quest uses the same path but has had less testing.
+Meal sets come from master data, so a game patch that renames an internal field
+or method makes the panel report the failing call instead of throwing — a patch
+may still need a mod update. Treat it as a single-player / co-op convenience
+tool rather than a balance mod.
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 
@@ -82,24 +100,16 @@ convenience tool rather than a balance mod.
   meal master data, then the game's apply API). They are not shipped and were
   removed from the working tree after verification; earlier commits in the git
   history contain them if a future game patch needs the investigation repeated.
-- The mod builds a fresh `app.cMealEffect` per apply:
-  `copyFrom(app.user_data.MealDataLobby.cData, false)`, extras through
-  `addRandomTableParam(tableId)` or `addRandomData(record)`, then
-  `cHunterMealEffect:setMealEffect`, followed by the timer and flags a real
-  canteen eat leaves behind (`_DurationTimer = _TimerMax = minutes * 60`).
-- Meal sets, fixed skills and the random-buff pool are read from the game's
-  master data at runtime, so canteen changes (new or event meals) appear
-  without a mod update.
 - `./package.sh` builds both release zips into `dist/`. It reads the version
   from a `local VERSION = "..."` line in `reframework/meal_buffet.lua`.
-- Only the user-controlled hunter is ever targeted for writes; the
-  master-player fallback is refused.
 - If a game patch renames an internal field or method, the mod reports the
   failing call in its status line instead of throwing.
 - Syntax gate: the script runs under LuaJIT (Lua 5.1). Check a change with a
   real Lua 5.1 compiler, not only a modern Lua parser — 5.4-only syntax, and
   even a nested `...`, passes most parsers and fails to load in game
   (`cannot use '...' outside a vararg function`).
+- Packaging notes for the Nexus release live in `packaging/nexus/`
+  (`NEXUS_PAGE.md`, `README.txt`, `MEAL_STRIPPER_RETIREMENT.md`).
 
 ## Credits & license
 

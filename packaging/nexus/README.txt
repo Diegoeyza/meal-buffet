@@ -1,19 +1,18 @@
 Meal Buffet — REFramework mod for Monster Hunter Wilds
 ====================================================
 
-Status: in development. This readme ships inside the release archive. The
-repository currently builds only a discovery probe; the release script is not
-written yet.
+Applies any canteen meal to YOUR hunter on demand, without walking to the
+canteen and without spending a Meal Voucher. Pick one of the game's meal sets,
+choose or reroll the two extra buffs, then press Apply. Works in the hub, at
+camp, and during a quest.
 
-Applies any canteen meal buff to YOUR hunter on demand, without walking to the
-canteen and without spending a Meal Voucher. Pick one of the game's base meals
-(the list is read from the game's meal master data at runtime, never
-hardcoded), pick or reroll the extra meal skills, then press Apply. Works in
-the hub, at camp, and mid-quest.
+This mod replaces Meal Stripper: the Clear meal button is the same one-click
+meal strip, and applying a new meal replaces the active one directly, so you
+do not need to strip and re-eat. If Meal Stripper is installed, remove it.
 
-This mod is in development. It only writes meal state on your own local
-hunter: it never selects other players, does not modify game files, does not
-write save data, and does not talk to the network.
+Only your own local hunter is ever touched: other players are never selected,
+game files are not modified, save data is not written, and nothing talks to
+the network.
 
 REQUIREMENTS
 ------------
@@ -40,20 +39,26 @@ USAGE
 -----
   1. Press Insert to open the REFramework menu.
   2. Script Generated UI -> Meal Buffet.
-  3. Pick a base meal from the list.
-  4. Pick the extra meal skills, or reroll them, until you have the set you
-     want.
-  5. Press "Apply". The meal buff lands on your hunter immediately.
+  3. < Prev / Next > pick a meal set. Its base stats and fixed skills are
+     listed.
+  4. For each extra buff slot, < / > cycles: game roll -> none -> a specific
+     buff. Each picked buff shows a short description.
+  5. Press "Apply meal". The active skills list at the top shows what landed.
+  6. Press "Clear meal" to remove the active meal (this is the Meal Stripper
+     strip).
   - Works outside a quest (hub, camp) and during a quest.
   - No Meal Voucher and no ingredients are consumed.
 
 NOTES
 -----
-- Meals and skills are enumerated from game master data, so a title update
-  that adds meals shows up without a mod update.
-- If a game patch renames an internal meal field, the mod logs a per-field
-  miss instead of erroring.
+- Meals, fixed skills and the extra-buff pool come from game master data at
+  runtime, so a title update that adds meals shows up without a mod update.
+- Applying a meal replaces whatever meal is already active.
+- The selection (meal + buffs) is saved to reframework/data/meal_buffet.json.
+- If a game patch renames an internal field or method, the panel reports the
+  failing call instead of throwing.
 - Reload the script any time: REFramework menu -> "Script" -> "Reset scripts".
+- No hooks, no per-frame work: writes happen only when you press Apply/Clear.
 
 CREDITS
 -------

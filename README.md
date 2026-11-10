@@ -1,8 +1,9 @@
 # Meal Buffet
 
-> **Status: v0.1 in development.** The release script (`reframework/meal_buffet.lua`)
-> is not built yet: the apply path is being verified on the current game build
-> with the discovery probe in `reframework/meal_apply_probe.lua`.
+> **Status: v0.1.0.** The apply path is verified on the current build: the mod
+> builds the meal with the game's own `app.cMealEffect` and hands it to the
+> hunter. Verified in game that the applied meal lists the same food skills as
+> a real canteen meal. Mid-quest use still needs an explicit test.
 
 **A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal buff
 to your own hunter on demand, from the REFramework menu — no walk to the
@@ -49,11 +50,6 @@ and extra food skills — is a small state block on your local hunter,
 
 ## Install
 
-Not installable yet: the release script does not exist. The only file that
-loads today is the development probe (see **Development** below).
-
-Once the release ships, install will be:
-
 1. Install REFramework if you have not already.
 2. Copy `reframework/meal_buffet.lua` to
    `<game>\reframework\autorun\meal_buffet.lua`
@@ -61,7 +57,7 @@ Once the release ships, install will be:
 3. Launch the game → REFramework menu (Insert) → **Script Generated UI** →
    **Meal Buffet** confirms it loaded.
 
-`./package.sh` will then build two shapes into `dist/`: a flat bundle
+`./package.sh` builds two shapes into `dist/`: a flat bundle
 (`meal-buffet-<version>.zip`) and a `MealBuffet-<version>.zip` laid out for the
 game folder (Nexus/Vortex).
 
@@ -76,10 +72,9 @@ Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
 ## Status
 
-In development. The meal state, the master data and the apply path are being
-verified on the current build with the probe below; the panel and Apply are not
-written yet. Treat it as a single-player / co-op convenience tool rather than a
-balance mod.
+v0.1.0. Apply works and the food-skill list matches a real meal. Verified in the
+hub; mid-quest still needs a test. Treat it as a single-player / co-op
+convenience tool rather than a balance mod.
 
 ## Development
 

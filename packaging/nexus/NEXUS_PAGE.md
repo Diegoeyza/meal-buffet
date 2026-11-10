@@ -1,7 +1,4 @@
-# Nexus page — Meal Buffet v0.1.0 (in development)
-
-**Not ready to upload.** The release script (`reframework/meal_buffet.lua`) does
-not exist yet; this page is the draft for when the apply path is verified.
+# Nexus page — Meal Buffet v0.1.0
 
 Upload `dist/MealBuffet-0.1.0.zip` as the main file.
 

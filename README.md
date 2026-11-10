@@ -47,6 +47,11 @@ on your local hunter, `app.cHunterMealEffect`.
 
 ## Install
 
+Not installable yet: the release script does not exist. The only file that
+loads today is the development probe (see **Development** below).
+
+Once the release ships, install will be:
+
 1. Install REFramework if you have not already.
 2. Copy `reframework/meal_buffet.lua` to
    `<game>\reframework\autorun\meal_buffet.lua`
@@ -54,11 +59,11 @@ on your local hunter, `app.cHunterMealEffect`.
 3. Launch the game → REFramework menu (Insert) → **Script Generated UI** →
    **Meal Buffet** confirms it loaded.
 
-Release zips (`./package.sh` → `dist/`) come in two shapes: a flat bundle
+`./package.sh` will then build two shapes into `dist/`: a flat bundle
 (`meal-buffet-<version>.zip`) and a `MealBuffet-<version>.zip` laid out for the
 game folder (Nexus/Vortex).
 
-## Usage
+## Usage (planned)
 
 1. REFramework menu (Insert) → **Script Generated UI** → **Meal Buffet**.
 2. Pick a base meal.
@@ -69,17 +74,36 @@ Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
 ## Status
 
-In development. The menu, the meal list and Apply work; treat it as a
-single-player / co-op convenience tool rather than a balance mod.
+In development. The meal state, the master data and the apply path are being
+verified on the current build with the probe below; the panel and Apply are not
+written yet. Treat it as a single-player / co-op convenience tool rather than a
+balance mod.
 
 ## Development
 
-- `reframework/meal_apply_probe.lua` is the development probe. It is kept in
-  the repo and is **not** included in release bundles.
-- `./package.sh` builds both release zips into `dist/`.
-- The field set was established on the 2026-11 build via the probe. If a game
-  patch renames an internal meal field, the mod logs a per-field miss instead
-  of erroring — a patch may still need a mod update for full function.
+- `reframework/meal_apply_probe.lua` is the discovery probe. Copy it to
+  `<game>\reframework\autorun\`, then open REFramework → Script Generated UI →
+  **Meal Buffet Probe**. It is kept in the repo and is **not** included in
+  release bundles.
+- Probe outputs land in `reframework/data/`:
+  `meal_apply_probe_types.json` (type surface),
+  `meal_apply_probe_master.json` (meal master data, base meals and the random
+  skill pool),
+  `meal_apply_probe_states.json` (appended meal snapshots, tagged by hand),
+  `meal_apply_probe_capture.json` (hooked meal/dining calls with args, return
+  values and an epoch marker),
+  `meal_apply_probe_apply.json` (clone/strip/apply-clone experiment with
+  read-back values and +15/+120-frame verification).
+- Probe flow, one session: Dump types + Dump master data; Arm hooks; snapshot
+  a normal eat (tag `before` / `after_normal`) and a voucher eat (tag `before` /
+  `after_voucher`), dumping the capture after each; then Clone → Strip → Apply
+  clone, and repeat during a quest for the mid-quest case.
+- `./package.sh` builds both release zips into `dist/` once
+  `reframework/meal_buffet.lua` exists.
+- Write paths only ever act on the user-controlled hunter; the master-player
+  fallback is refused for writes.
+- If a game patch renames an internal field, the probe records a per-field miss
+  instead of erroring — a patch may still need a mod update for full function.
 
 ## Credits & license
 

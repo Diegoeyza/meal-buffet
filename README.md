@@ -78,47 +78,25 @@ convenience tool rather than a balance mod.
 
 ## Development
 
-- `reframework/meal_apply_probe.lua` is the phase-1 probe (type surface,
-  master data, meal watcher, clone/strip/apply-clone). `reframework/meal_apply_probe2.lua`
-  is the phase-2 probe (meal master-data tables, canteen menu enumeration, and
-  the two candidate apply paths: `FacilityDining:setMealEffectLobby` and
-  "build a `cMealEffect`, then `setMealEffect`"). Copy either to
-  `<game>\reframework\autorun\`, then open REFramework → Script Generated UI →
-  **Meal Buffet Probe** / **Meal Apply Probe 2**. Neither is included in
-  release bundles.
-- Probe outputs land in `reframework/data/`:
-  `meal_apply_probe_types.json` (type surface),
-  `meal_apply_probe_master.json` (meal master data, base meals and the random
-  skill pool),
-  `meal_apply_probe_states.json` (appended meal snapshots, tagged by hand),
-  `meal_apply_probe_watch.json` (read-only change timeline: every field move
-  with before/after values, food-skill count and derived stats, plus the run
-  epoch),
-  `meal_apply_probe_apply.json` (clone/strip/apply-clone experiment with
-  read-back values and +15/+120-frame verification).
-- Phase 2 outputs: `meal_apply_probe2_types.json` (apply-path signatures),
-  `meal_apply_probe2_master.json` (base meals with `MealSkill[]` and
-  `_RandomTable[]`, the random table with weights, canteen and field-camp
-  menus), `meal_apply_probe2_apply.json` (each apply attempt with before/after
-  state and +15/+120-frame verification).
-- Probe flow, one session: Dump types + Dump master data; turn Watch on;
-  snapshot before the eat (tag `before`), eat at the canteen (a voucher is
-  fine), snapshot again (tag `after_eat`), then dump the watch; then
-  Clone → Strip → Apply clone, and repeat during a quest for the mid-quest
-  case.
-- The probe deliberately registers **no hooks**. An earlier version hooked the
-  dining classes and crashed the game when an eat fired a hook whose arguments
-  could not be dereferenced safely; a native access violation cannot be caught
-  from Lua. The watcher polls the one meal object it resolves instead.
-- `./package.sh` builds both release zips into `dist/` once
-  `reframework/meal_buffet.lua` exists. It reads the version from a
-  `local VERSION = "..."` line in that file, so the release script must declare
-  one.
-- Write paths only ever act on the user-controlled hunter; the master-player
-  fallback is refused for writes.
-- If a game patch renames an internal field, the probe records a per-field miss
-  instead of erroring — a patch may still need a mod update for full function.
-- Syntax gate: the scripts run under LuaJIT (Lua 5.1). Check a change with a
+- The apply path was established with two development probes (type surface and
+  meal master data, then the game's apply API). They are not shipped and were
+  removed from the working tree after verification; earlier commits in the git
+  history contain them if a future game patch needs the investigation repeated.
+- The mod builds a fresh `app.cMealEffect` per apply:
+  `copyFrom(app.user_data.MealDataLobby.cData, false)`, extras through
+  `addRandomTableParam(tableId)` or `addRandomData(record)`, then
+  `cHunterMealEffect:setMealEffect`, followed by the timer and flags a real
+  canteen eat leaves behind (`_DurationTimer = _TimerMax = minutes * 60`).
+- Meal sets, fixed skills and the random-buff pool are read from the game's
+  master data at runtime, so canteen changes (new or event meals) appear
+  without a mod update.
+- `./package.sh` builds both release zips into `dist/`. It reads the version
+  from a `local VERSION = "..."` line in `reframework/meal_buffet.lua`.
+- Only the user-controlled hunter is ever targeted for writes; the
+  master-player fallback is refused.
+- If a game patch renames an internal field or method, the mod reports the
+  failing call in its status line instead of throwing.
+- Syntax gate: the script runs under LuaJIT (Lua 5.1). Check a change with a
   real Lua 5.1 compiler, not only a modern Lua parser — 5.4-only syntax, and
   even a nested `...`, passes most parsers and fails to load in game
   (`cannot use '...' outside a vararg function`).

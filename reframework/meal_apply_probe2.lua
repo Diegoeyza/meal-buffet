@@ -41,7 +41,7 @@ local log = log
 local imgui = imgui
 local unpack = unpack or table.unpack
 
-local PROBE_VERSION = 2
+local PROBE_VERSION = 3
 
 local OUT_TYPES  = "meal_apply_probe2_types.json"
 local OUT_MASTER = "meal_apply_probe2_master.json"
@@ -125,6 +125,19 @@ local function field_value(obj, name)
     if not f then return nil end
     local is_static = safe(function() return f:is_static() end)
     return safe(function() return f:get_data(is_static and nil or obj) end)
+end
+
+local function write_field(obj, typeName, name, value)
+    if obj == nil then return false, "no_object" end
+    local ok = safe(function() obj:set_field(name, value) return true end)
+    if ok then return true, "set_field" end
+    local td = safe(sdk.find_type_definition, typeName)
+    if not td then return false, "no_type" end
+    local ok2 = safe(function()
+        sdk.set_native_field(obj, td, name, value)
+        return true
+    end)
+    return ok2 == true, ok2 and "set_native_field" or "write_failed"
 end
 
 local function call_method(obj, name)
@@ -855,9 +868,14 @@ local function build_and_apply()
     rec.attach = { ok = attached, error = attach_err }
     rec.after_attach = meal_state()
 
-    -- timer: the record's _Time is minutes; mirror the real eat (70 min)
-    local minutes = tonumber(rec.record._Time) or 70
-    local timer_ok, timer_err = call_void(meal, "setDurationTimer(System.Single)", minutes * 60)
+    -- Timer: a real eat ends with _DurationTimer == _TimerMax == seconds and
+    -- both flags true. The setters can re-base the timer (the probe measured
+    -- _DurationTimer = 0 after setTimerActive), so the observed end state is
+    -- written directly afterwards and read back.
+    local minutes = tonumber(rec.record._EffectiveMinutes)
+        or tonumber(rec.record._Time) or 70
+    local seconds = minutes * 60
+    local timer_ok, timer_err = call_void(meal, "setDurationTimer(System.Single)", seconds)
     local timer_active_ok, timer_active_err = call_void(meal, "setTimerActive(System.Boolean)", true)
     local effect_active_ok, effect_active_err = call_void(meal, "setEffectActive(System.Boolean)", true)
     rec.timer = {
@@ -866,11 +884,26 @@ local function build_and_apply()
         timer_active_ok = timer_active_ok, timer_active_error = timer_active_err,
         effect_active_ok = effect_active_ok, effect_active_error = effect_active_err,
     }
+
+    local wrote = {}
+    for _, w in ipairs({
+        { name = "_DurationTimer", value = seconds },
+        { name = "_TimerMax", value = seconds },
+        { name = "_IsTimerActive", value = true },
+        { name = "_IsEffectActive", value = true },
+    }) do
+        local ok, how = write_field(meal, "app.cHunterMealEffect", w.name, w.value)
+        wrote[w.name] = { ok = ok, via = how, readback = safe_str(field_value(meal, w.name)) }
+    end
+    rec.final_writes = wrote
     rec.after = meal_state()
     pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {} }
     record_attempt(rec)
-    lastStatus = string.format("build+apply %s: copy=%s randoms=%d attach=%s",
-        tostring(menu.menu), tostring(copied), added, tostring(attached))
+    lastStatus = string.format(
+        "build+apply %s: copy=%s randoms=%d attach=%s timer=%s/%s",
+        tostring(menu.menu), tostring(copied), added, tostring(attached),
+        tostring(field_value(meal, "_DurationTimer")),
+        tostring(field_value(meal, "_TimerMax")))
     log.info("[MealApplyProbe2] " .. lastStatus)
 end
 

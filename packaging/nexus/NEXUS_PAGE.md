@@ -76,7 +76,7 @@ Default Steam path:
 
 [list]
 [*]In the hub and at camp, without a canteen visit.
-[*]During a quest (same apply path; tested less than the hub — report anything odd).
+[*]During a quest, including at the camp canteen.
 [*]No voucher and no ingredients are consumed in any case.
 [*]Applying a meal replaces whatever meal is already active, so you can swap sets freely.
 [/list]

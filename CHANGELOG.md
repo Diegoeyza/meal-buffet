@@ -2,6 +2,7 @@
 
 ## 0.1.1 — 2026-11-10
 - Show a short description for every active or picked meal skill.
+- Verified in the hub, at camp and during a quest.
 - `Descriptions: on/off` toggle to keep the panel compact (saved in the config).
 
 ## 0.1.0 — 2026-11-10

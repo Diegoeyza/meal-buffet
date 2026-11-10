@@ -1,8 +1,8 @@
 # Meal Buffet
 
-> **Status: v0.1.1.** Apply verified in game: the meal builder uses the game's
-> own `app.cMealEffect`, and the applied meal lists the same food skills as a
-> real canteen meal. Mid-quest use needs an explicit test.
+> **Status: v0.1.1.** Apply verified in game in the hub, at camp and during a
+> quest: the meal builder uses the game's own `app.cMealEffect`, and the
+> applied meal lists the same food skills as a real canteen meal.
 
 **A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal to your
 own hunter on demand, from the REFramework menu — no walk to the canteen, no
@@ -85,8 +85,8 @@ Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
 ## Status and limits
 
-v0.1.1. Apply and Clear are verified in the hub; the food-skill list matches a
-real meal. Applying during a quest uses the same path but has had less testing.
+v0.1.1. Apply and Clear are verified in the hub, at camp and during a quest;
+the food-skill list matches a real meal.
 Meal sets come from master data, so a game patch that renames an internal field
 or method makes the panel report the failing call instead of throwing — a patch
 may still need a mod update. Treat it as a single-player / co-op convenience

@@ -83,9 +83,13 @@ balance mod.
 
 ## Development
 
-- `reframework/meal_apply_probe.lua` is the discovery probe. Copy it to
+- `reframework/meal_apply_probe.lua` is the phase-1 probe (type surface,
+  master data, meal watcher, clone/strip/apply-clone). `reframework/meal_apply_probe2.lua`
+  is the phase-2 probe (meal master-data tables, canteen menu enumeration, and
+  the two candidate apply paths: `FacilityDining:setMealEffectLobby` and
+  "build a `cMealEffect`, then `setMealEffect`"). Copy either to
   `<game>\reframework\autorun\`, then open REFramework → Script Generated UI →
-  **Meal Buffet Probe**. It is kept in the repo and is **not** included in
+  **Meal Buffet Probe** / **Meal Apply Probe 2**. Neither is included in
   release bundles.
 - Probe outputs land in `reframework/data/`:
   `meal_apply_probe_types.json` (type surface),
@@ -97,6 +101,11 @@ balance mod.
   epoch),
   `meal_apply_probe_apply.json` (clone/strip/apply-clone experiment with
   read-back values and +15/+120-frame verification).
+- Phase 2 outputs: `meal_apply_probe2_types.json` (apply-path signatures),
+  `meal_apply_probe2_master.json` (base meals with `MealSkill[]` and
+  `_RandomTable[]`, the random table with weights, canteen and field-camp
+  menus), `meal_apply_probe2_apply.json` (each apply attempt with before/after
+  state and +15/+120-frame verification).
 - Probe flow, one session: Dump types + Dump master data; turn Watch on;
   snapshot before the eat (tag `before`), eat at the canteen (a voucher is
   fine), snapshot again (tag `after_eat`), then dump the watch; then

@@ -92,14 +92,20 @@ balance mod.
   `meal_apply_probe_master.json` (meal master data, base meals and the random
   skill pool),
   `meal_apply_probe_states.json` (appended meal snapshots, tagged by hand),
-  `meal_apply_probe_capture.json` (hooked meal/dining calls with args, return
-  values and an epoch marker),
+  `meal_apply_probe_watch.json` (read-only change timeline: every field move
+  with before/after values, food-skill count and derived stats, plus the run
+  epoch),
   `meal_apply_probe_apply.json` (clone/strip/apply-clone experiment with
   read-back values and +15/+120-frame verification).
-- Probe flow, one session: Dump types + Dump master data; Arm hooks; snapshot
-  a normal eat (tag `before` / `after_normal`) and a voucher eat (tag `before` /
-  `after_voucher`), dumping the capture after each; then Clone → Strip → Apply
-  clone, and repeat during a quest for the mid-quest case.
+- Probe flow, one session: Dump types + Dump master data; turn Watch on;
+  snapshot before the eat (tag `before`), eat at the canteen (a voucher is
+  fine), snapshot again (tag `after_eat`), then dump the watch; then
+  Clone → Strip → Apply clone, and repeat during a quest for the mid-quest
+  case.
+- The probe deliberately registers **no hooks**. An earlier version hooked the
+  dining classes and crashed the game when an eat fired a hook whose arguments
+  could not be dereferenced safely; a native access violation cannot be caught
+  from Lua. The watcher polls the one meal object it resolves instead.
 - `./package.sh` builds both release zips into `dist/` once
   `reframework/meal_buffet.lua` exists. It reads the version from a
   `local VERSION = "..."` line in that file, so the release script must declare

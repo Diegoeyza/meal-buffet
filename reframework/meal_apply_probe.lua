@@ -1,5 +1,5 @@
 --
--- meal_apply_probe.lua v2 — discovery probe for the Meal Buffet mod
+-- meal_apply_probe.lua v3 — discovery probe for the Meal Buffet mod
 --
 -- Goal: apply any canteen meal to the local hunter on demand, anywhere
 -- (hub, camp, training grounds, mid-quest), without a voucher, choosing the
@@ -10,12 +10,13 @@
 --      canteen classes, so the apply path can be found;
 --   2. master data: the base meals with their fixed skill sets, plus the
 --      random meal-skill pool and its weights;
---   3. the eat call: which game method performs a canteen eat, with which
---      arguments and which return value (hooks, every distinct signature is
---      recorded once with first/last time and a count);
---   4. the write set: a full meal-state snapshot before/after a real eat, and
---      again after a voucher eat (the snapshots are appended to one file so
---      they can be diffed).
+--   3. what a real eat changes, and in what order: a read-only watcher polls
+--      the meal object and records one event per change (field, before,
+--      after, food-skill count, derived stats). No hooks on the dining
+--      classes: their hook arguments cannot be dereferenced safely on this
+--      build and crashed the game once. Hooking is deliberately absent here.
+--   4. the write set: full meal snapshots before/after a real eat (appended to
+--      one file, tagged, so they can be diffed).
 --
 -- It also carries the write-path experiment for the fallback: clone the
 -- primitive fields of a real meal, strip it, write the clone back, read every
@@ -28,18 +29,19 @@
 --   Reload: REFramework menu -> Script -> Reset scripts (Reset recreates the
 --   Lua state, so the duplicate-load guard below never blocks a reload).
 -- Footprint: two pointer-only hooks on cQuestPlaying (update/exit, to label
---   in-quest vs out-of-quest runs, registered at load, pcall-guarded) plus the
---   capture hooks, which only exist after "Arm hooks" is pressed. The frame
---   callback only runs while a verification is scheduled. Writes happen only
+--   in-quest vs out-of-quest runs, registered at load, pcall-guarded, the same
+--   pattern the previous released probes used) plus a field poll every
+--   POLL_FRAMES frames while "Watch" is on. No other hooks. Writes happen only
 --   on the explicit Clone/Strip/Apply buttons, and only when the resolved
 --   hunter is the user-controlled one.
 --
 -- Lineage: helper shapes (safe wrappers, field descriptor reads, local hunter
---   resolution, hook arg capture) follow this author's meal_probe and
---   kill_probe (MIT ancestry: Hunt Dumper by thieleju); the meal master-data
---   paths follow _CatLib (read-only reference, no code copied).
+--   resolution) follow this author's meal_probe and kill_probe (MIT ancestry:
+--   Hunt Dumper by thieleju); the meal master-data paths follow _CatLib
+--   (read-only reference, no code copied).
 --
--- Every SDK call is pcall-guarded: this script never throws into the game.
+-- Every SDK call is pcall-guarded. A game-side access violation cannot be
+-- caught from Lua, so nothing here dereferences anything it does not own.
 --
 
 local re = re
@@ -48,12 +50,12 @@ local json = json
 local log = log
 local imgui = imgui
 
-local PROBE_VERSION = 2
+local PROBE_VERSION = 3
 
 local OUT_TYPES   = "meal_apply_probe_types.json"
 local OUT_MASTER  = "meal_apply_probe_master.json"
 local OUT_STATES  = "meal_apply_probe_states.json"
-local OUT_CAPTURE = "meal_apply_probe_capture.json"
+local OUT_WATCH   = "meal_apply_probe_watch.json"
 local OUT_APPLY   = "meal_apply_probe_apply.json"
 
 -- Re-running the script must not register a second set of callbacks/hooks.
@@ -61,8 +63,6 @@ local OUT_APPLY   = "meal_apply_probe_apply.json"
 local ALREADY_LOADED = _G.MEAL_APPLY_PROBE_LOADED == true
 _G.MEAL_APPLY_PROBE_LOADED = true
 
-local PER_TYPE_HOOKS = 12
-local MAX_HOOKS = 90
 local MAX_SIGNATURES = 300
 local MAX_MASTER_ENTRIES = 60
 local MAX_STATES = 40
@@ -70,11 +70,9 @@ local MAX_ERRORS = 30
 local VERIFY_FRAMES = { 15, 120 }
 
 local lastStatus = "(idle)"
-local armed = false
 local pending_verify = nil
 local pending_action = nil   -- "clone" | "strip" | "apply", executed on the next frame
 local capture_epoch = 0
-local ret_samples = {}      -- method full name -> { values }
 
 local errors = {}
 local function note_error(where, err)
@@ -291,11 +289,13 @@ local function meal_object()
         -- of a session with no data.
         local td = safe(function() return st:get_type_definition() end)
         for _, f in ipairs(safe(function() return td and td:get_fields() end) or {}) do
-            local is_static = safe(function() return f:is_static() end)
-            local v = safe(function() return f:get_data(is_static and nil or st) end)
-            local tn = v and type_name(v)
+            local tn = safe_str(safe(function() return f:get_type():get_full_name() end))
             if tn == "app.cHunterMealEffect" or tn == "app.cMealEffect" then
-                return v, src .. "+scan:" .. tostring(safe(function() return f:get_name() end)), st
+                local is_static = safe(function() return f:is_static() end)
+                local v = safe(function() return f:get_data(is_static and nil or st) end)
+                if v ~= nil then
+                    return v, src .. "+scan:" .. tostring(safe(function() return f:get_name() end)), st
+                end
             end
         end
         return nil, "no_meal_object"
@@ -336,7 +336,11 @@ local function value_summary(obj, maxGetters, knownGetters)
             if is_primitive(v) then
                 out.fields[fname] = v
             elseif v ~= nil then
-                out.object_fields[fname] = type_name(v) or tostring(v)
+                -- declared type from metadata: never dereference an arbitrary
+                -- value just to label it
+                out.object_fields[fname] = safe_str(safe(function()
+                    return f:get_type():get_full_name()
+                end)) or safe_str(safe(function() return f:get_type():get_name() end))
             end
         end
     end
@@ -387,9 +391,9 @@ local function describe_method(m, declaringType)
         full_params[#full_params + 1] = full
     end
     local name = safe(function() return m:get_name() end)
-    -- Method:is_static() is not proven on this build; nil means "decide at
-    -- hook time" by checking whether args[2] is an object of the declaring
-    -- type, which is what the hook body does.
+    -- Method:is_static() is not proven on this build; nil means "unknown".
+    -- Nothing depends on it any more: the probe no longer hooks these
+    -- methods, it only lists their signatures.
     local static = safe(function() return m:is_static() end)
     if static ~= nil then static = static == true end
     return {
@@ -660,7 +664,10 @@ local function dump_node(obj, label)
         if fname then
             local is_static = safe(function() return f:is_static() end)
             local v = safe(function() return f:get_data(is_static and nil or obj) end)
-            local rec = { name = fname, type = type_name(v) }
+            local rec = {
+                name = fname,
+                type = safe_str(safe(function() return f:get_type():get_full_name() end)),
+            }
             if is_primitive(v) then
                 rec.value = v
             else
@@ -761,29 +768,32 @@ end
 -- ---------------------------------------------------------------------------
 -- quest state (labels mid-quest vs out-of-quest runs)
 --
--- cQuestPlaying is not reachable as a singleton; its instance is captured from
--- update() and dropped on exit() (proven by meal_probe). The hook bodies are
--- pcall-guarded so a build change cannot log an error every frame.
+-- Read from the QuestManager singleton if it exists; no hooks anywhere in this
+-- probe. If the manager exposes none of the guessed members the answer is
+-- "unknown", which is only a label: the run tags in the snapshot list are the
+-- authoritative record of where a test happened.
 -- ---------------------------------------------------------------------------
 
-local quest_state = nil
-
 local function quest_state_report()
-    local out = { in_quest = false }
-    if quest_state == nil then
-        out.reason = "no_quest_state"
+    local out = { in_quest = "unknown" }
+    local qm = safe(function() return sdk.get_managed_singleton("app.QuestManager") end)
+    if not qm then
+        out.reason = "no_quest_manager"
         return out
     end
-    if not is_managed(quest_state) then
-        quest_state = nil
-        out.reason = "stale"
-        return out
+    out.manager = type_name(qm)
+    for _, name in ipairs({
+        "_IsQuestPlaying", "_QuestPlaying", "_IsPlayingQuest", "_IsInQuest",
+    }) do
+        local v = field_value(qm, name)
+        if is_primitive(v) then out[name] = v end
     end
-    out.in_quest = true
-    out.type = type_name(quest_state)
-    out.is_meal_effect_active = safe_str(safe(function()
-        return quest_state:call("isMealEffectActive")
-    end))
+    for _, getter in ipairs({
+        "get_IsQuestPlaying", "get_IsPlayingQuest", "get_IsInQuest",
+    }) do
+        local v = safe(function() return qm:call(getter) end)
+        if is_primitive(v) then out[getter] = v end
+    end
     return out
 end
 
@@ -916,278 +926,167 @@ local function cycle_snapshot_tag()
 end
 
 -- ---------------------------------------------------------------------------
--- call capture (question 3)
+-- meal watcher (replaces the call-capture hooks)
+--
+-- Hooks on the dining classes crashed the game: hook arguments cannot be
+-- dereferenced safely for arbitrary methods on this build, and a native access
+-- violation cannot be caught from Lua. The watcher answers the same question
+-- (when and how a real eat changes the meal state) by polling the one object
+-- we already resolve, with no hooks at all.
+--
+-- Poll every POLL_FRAMES frames, compare with the previous reading, and record
+-- one compact event per change: which fields moved, their before/after values,
+-- the food-skill count and the four derived stats. The order of those eventis
+-- is what tells us how an eat builds the meal.
 -- ---------------------------------------------------------------------------
 
--- Meal-state classes first so the per-type budget cannot be spent elsewhere.
--- `all = true` means: hook every method except getters/setters and teardown,
--- because the call that populates a meal is not guaranteed to have "meal" in
--- its name. The dining/canteen classes are guesses, so they keep the word
--- filter.
-local HOOK_TYPES = {
-    { name = "app.cHunterMealEffect", all = true },
-    { name = "app.cMealEffect", all = true },
-    { name = "app.cHunterMealSkillParamInfo", all = true },
-    { name = "app.FacilityDining" },
-    { name = "app.cFacilityDining" },
-    { name = "app.FacilityDiningManager" },
-    { name = "app.cFacilityDiningManager" },
-    { name = "app.DiningManager" },
-    { name = "app.cDiningManager" },
-    { name = "app.MealManager" },
-    { name = "app.cMealManager" },
-    { name = "app.MealUtil" },
-    { name = "app.cMealUtil" },
-    { name = "app.FacilityManager" },
-    { name = "app.cFacilityManager" },
-    { name = "app.CampManager" },
-    { name = "app.cCampManager" },
-    { name = "app.CampUtil" },
-    { name = "app.GuiDining" },
-    { name = "app.cGuiDining" },
-    { name = "app.GuiMeal" },
-    { name = "app.cGuiMeal" },
-    { name = "app.GuiRestaurant" },
-    { name = "app.cGuiRestaurant" },
+local POLL_FRAMES = 6
+local MAX_WATCH_EVENTS = 300
+
+local WATCH_FIELDS = {
+    "_IsEffectActive", "_IsTimerActive", "_DurationTimer", "_TimerMax",
+    "_MaxHealthAdd", "_MaxStaminaAdd", "_TempIsEffectActive", "_TempIsTimerActive",
 }
 
-local HOOK_WORDS = {
-    "apply", "eat", "order", "cook", "dining", "meal", "serve", "consume",
-    "voucher", "decide", "select", "initialize", "create",
+local watch = {
+    on = false,
+    events = {},
+    last = nil,
+    last_sig = nil,
+    frames = 0,
+    polls = 0,
+    changes = 0,
+    started_wall = nil,
 }
 
--- Words that are only interesting when the method name also names a meal
--- concept; otherwise UI selectors and object factories flood the capture.
-local RESTRICTED_WORDS = { select = true, decide = true, create = true, initialize = true }
-local MEAL_WORDS = { "meal", "dining", "canteen", "cook", "voucher" }
-
-local HOOK_SKIP = {
-    "^get_", "^is_", "^set_", "^update", "^lateUpdate", "^draw", "^calc",
-    "^onFrame", "^finalize", "^%.ctor", "^%.dtor", "^reset", "^clear",
-}
-
-local captures = { hooks = {}, events = {}, seen = {}, by_type = {} }
-local evicted = 0
-
-local function contains_any(s, words)
-    for _, w in ipairs(words) do
-        if s:find(w, 1, true) then return true end
+local function watch_reading(with_stats)
+    local meal, src, st = meal_object()
+    local out = { src = src, values = {}, skill_count = 0 }
+    if not meal then
+        out.fail = src
+        return out
     end
-    return false
+    for _, name in ipairs(WATCH_FIELDS) do
+        out.values[name] = field_value(meal, name)
+    end
+    local param = field_value(meal, "_SkillParamInfo")
+    out.skill_count = skill_entries(param).count
+    out.skill_pointer = tostring(param)
+    if with_stats then
+        out.stats = stats_snapshot(st)
+    end
+    return out
 end
 
-local function name_is_hookable(name, hook_all)
-    if name == nil then return false end
-    local lower = name:lower()
-    for _, pat in ipairs(HOOK_SKIP) do
-        if lower:find(pat) then
-            -- reset/clear on a meal-shaped class can be the "end the meal"
-            -- call; keep them, drop the rest.
-            if pat == "^reset" or pat == "^clear" then
-                return hook_all or contains_any(lower, MEAL_WORDS)
-            end
-            return false
+local function watch_signature(reading)
+    if reading == nil or reading.values == nil then return "unavailable" end
+    local parts = {}
+    for _, name in ipairs(WATCH_FIELDS) do
+        parts[#parts + 1] = tostring(reading.values[name])
+    end
+    parts[#parts + 1] = tostring(reading.skill_count)
+    return table.concat(parts, "|")
+end
+
+local function watch_diff(before, after)
+    local changed = {}
+    if before == nil or before.values == nil or after == nil or after.values == nil then
+        return changed
+    end
+    for _, name in ipairs(WATCH_FIELDS) do
+        local b = before.values[name]
+        local a = after.values[name]
+        if tostring(b) ~= tostring(a) then
+            changed[#changed + 1] = { field = name, from = safe_str(b), to = safe_str(a) }
         end
     end
-    if hook_all then return true end
-    -- Lua patterns have no alternation, so the words are matched one by one.
-    for _, word in ipairs(HOOK_WORDS) do
-        if lower:find(word, 1, true) then
-            if RESTRICTED_WORDS[word] then
-                return contains_any(lower, MEAL_WORDS)
-            end
-            return true
-        end
+    if before.skill_count ~= after.skill_count then
+        changed[#changed + 1] = {
+            field = "skill_count",
+            from = before.skill_count,
+            to = after.skill_count,
+        }
     end
-    return false
+    return changed
 end
 
--- Convert one raw hook argument to something readable. The declared type is
--- the full type name, so enums (app.*Def.*) are treated as integers.
-local function arg_str(v, declared)
-    local t = declared or ""
-    if t:find("Boolean", 1, true) then
-        local b = safe(sdk.to_bool, v)
-        if b ~= nil then return "bool:" .. tostring(b) end
-    elseif t:find("Single", 1, true) or t:find("Double", 1, true) then
-        local f = safe(sdk.to_float, v)
-        if f == nil then f = safe(sdk.to_double, v) end
-        if f ~= nil then return string.format("float:%.5f", f) end
-    elseif t:find("Int", 1, true) or t:find("UInt", 1, true)
-        or t:find("Byte", 1, true) or t:find("SByte", 1, true)
-        or t:find("Def.", 1, true) then
-        local n = safe(sdk.to_int64, v)
-        if n ~= nil then return "int:" .. tostring(n) end
-    end
-    local mo = safe(sdk.to_managed_object, v)
-    if mo ~= nil and is_managed(mo) then
-        return "obj:" .. tostring(type_name(mo))
-    end
-    local n = safe(sdk.to_int64, v)
-    if n ~= nil then return "int:" .. tostring(n) end
-    return tostring(safe_str(v))
-end
+local function poll_watch()
+    if not watch.on then return end
+    watch.frames = watch.frames + 1
+    if watch.frames % POLL_FRAMES ~= 0 then return end
+    watch.polls = watch.polls + 1
 
-local function record_signature(desc, argstrings, is_instance)
-    local key = (desc.full or desc.signature) .. "|" .. table.concat(argstrings, ",")
-    local now = os.date("!%Y-%m-%dT%H:%M:%SZ")
-    local hit = captures.seen[key]
-    if hit then
-        hit.count = hit.count + 1
-        hit.last_wall = now
-        hit.last_epoch = capture_epoch
+    local reading = watch_reading(false)
+    local sig = watch_signature(reading)
+    if sig == watch.last_sig then
+        watch.last = reading
         return
     end
-    local rec = {
-        method = desc.full or desc.signature,
-        signature = desc.signature,
-        static = (not is_instance),
-        ret = desc.ret,
-        params = desc.params,
-        args = argstrings,
-        count = 1,
-        first_wall = now,
-        first_epoch = capture_epoch,
-        last_wall = now,
-        last_epoch = capture_epoch,
+
+    local changed = watch_diff(watch.last, reading)
+    -- stats are read only when something moved, to keep the poll cheap
+    local detailed = watch_reading(true)
+    watch.changes = watch.changes + 1
+    local ev = {
+        seq = watch.changes,
+        wall = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        epoch = capture_epoch,
+        in_quest = quest_state_report().in_quest,
+        changes = changed,
+        values = detailed.values,
+        skill_count = detailed.skill_count,
+        skill_pointer = detailed.skill_pointer,
+        stats = detailed.stats,
     }
-    captures.seen[key] = rec
-    captures.events[#captures.events + 1] = rec
-    while #captures.events > MAX_SIGNATURES do
-        local drop = table.remove(captures.events, 1)
-        evicted = evicted + 1
-        if drop then
-            for k, v in pairs(captures.seen) do
-                if v == drop then captures.seen[k] = nil break end
-            end
-        end
-    end
+    watch.events[#watch.events + 1] = ev
+    while #watch.events > MAX_WATCH_EVENTS do table.remove(watch.events, 1) end
+    watch.last = reading
+    watch.last_sig = sig
+    log.info(string.format("[MealApplyProbe] watch #%d: %d field(s) changed",
+        ev.seq, #changed))
 end
 
-local function arm_hooks()
-    if armed then
-        lastStatus = "hooks already armed (" .. tostring(#captures.hooks) .. " registered)"
-        return
+local function toggle_watch()
+    watch.on = not watch.on
+    if watch.on then
+        watch.frames = 0
+        watch.polls = 0
+        watch.changes = 0
+        watch.events = {}
+        watch.started_wall = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        watch.last = watch_reading(false)
+        watch.last_sig = watch_signature(watch.last)
+        lastStatus = "watch: on (baseline recorded)"
+    else
+        lastStatus = string.format("watch: off (%d polls, %d changes)", watch.polls, watch.changes)
     end
-    local registered, failed, dupes = 0, 0, 0
-    local seen_full = {}
-
-    for _, hookType in ipairs(HOOK_TYPES) do
-        if registered >= MAX_HOOKS then break end
-        local typeName = hookType.name
-        local td = safe(sdk.find_type_definition, typeName)
-        if td then
-            local per_type = 0
-            captures.by_type[typeName] = captures.by_type[typeName] or { hooked = {}, skipped = 0, candidates = 0 }
-            captures.by_type[typeName].all_methods = hookType.all == true
-            for _, m in ipairs(safe(function() return td:get_methods() end) or {}) do
-                if registered >= MAX_HOOKS then break end
-                if per_type >= PER_TYPE_HOOKS then
-                    captures.by_type[typeName].truncated = true
-                    break
-                end
-                local mname = safe(function() return m:get_name() end)
-                if name_is_hookable(mname, hookType.all) then
-                    captures.by_type[typeName].candidates = captures.by_type[typeName].candidates + 1
-                    local desc = describe_method(m, typeName)
-                    local full = desc.full or (typeName .. "." .. tostring(mname))
-                    if seen_full[full] then
-                        dupes = dupes + 1
-                    else
-                        seen_full[full] = true
-                        local ok = safe(function()
-                            sdk.hook(m, function(args)
-                                safe(function()
-                                    local this = safe(sdk.to_managed_object, args[2])
-                                    local this_type = (this and is_managed(this)) and type_name(this) or nil
-                                    -- static detection at call time: an instance
-                                    -- method receives an object of its declaring
-                                    -- type in args[2]; a static one receives its
-                                    -- first parameter there instead.
-                                    local is_instance
-                                    if desc.static == false then
-                                        is_instance = true
-                                    elseif desc.static == true then
-                                        is_instance = false
-                                    else
-                                        is_instance = this_type ~= nil
-                                            and this_type == desc.declaring
-                                    end
-                                    local base = is_instance and 3 or 2
-                                    local argstrings = {}
-                                    for i, ptype in ipairs(desc.params) do
-                                        local raw = args[base + i - 1]
-                                        argstrings[#argstrings + 1] = arg_str(raw, ptype)
-                                    end
-                                    if is_instance and this_type then
-                                        table.insert(argstrings, 1, "this:" .. this_type)
-                                    end
-                                    record_signature(desc, argstrings, is_instance)
-                                end)
-                            end, function(retval)
-                                safe(function()
-                                    local list = ret_samples[full]
-                                    if list == nil then
-                                        list = {}
-                                        ret_samples[full] = list
-                                    end
-                                    if #list >= 5 then return end
-                                    local s = arg_str(retval, desc.ret)
-                                    for _, existing in ipairs(list) do
-                                        if existing == s then return end
-                                    end
-                                    list[#list + 1] = s
-                                end)
-                                return nil
-                            end)
-                            return true
-                        end)
-                        if ok then
-                            registered = registered + 1
-                            per_type = per_type + 1
-                            captures.hooks[#captures.hooks + 1] = {
-                                method = full,
-                                params = desc.params,
-                                ret = desc.ret,
-                                static = desc.static,
-                            }
-                            captures.by_type[typeName].hooked[#captures.by_type[typeName].hooked + 1] = full
-                        else
-                            failed = failed + 1
-                        end
-                    end
-                else
-                    captures.by_type[typeName].skipped = captures.by_type[typeName].skipped + 1
-                end
-            end
-        end
-    end
-    armed = true
-    lastStatus = string.format("hooks armed: %d registered, %d dupes, %d failed (max %d)",
-        registered, dupes, failed, MAX_HOOKS)
     log.info("[MealApplyProbe] " .. lastStatus)
 end
 
-local function dump_capture()
+local function dump_watch()
     local out = {
-        armed = armed,
         epoch = capture_epoch,
-        evicted = evicted,
-        hooks = captures.hooks,
-        by_type = captures.by_type,
-        events = captures.events,
-        ret_samples = ret_samples,
+        started_wall = watch.started_wall,
+        polls = watch.polls,
+        changes = watch.changes,
+        events = watch.events,
         quest = quest_state_report(),
     }
-    dump_json(OUT_CAPTURE, out)
-    lastStatus = string.format("capture: %d hooks, %d signatures, %d ret methods -> %s",
-        #captures.hooks, #captures.events, (function()
-            local n = 0
-            for _ in pairs(ret_samples) do n = n + 1 end
-            return n
-        end)(), OUT_CAPTURE)
+    dump_json(OUT_WATCH, out)
+    lastStatus = string.format("watch: %d polls, %d events -> %s",
+        watch.polls, watch.changes, OUT_WATCH)
     log.info("[MealApplyProbe] " .. lastStatus)
     return out
+end
+
+local function clear_watch()
+    watch.events = {}
+    watch.changes = 0
+    watch.polls = 0
+    watch.last = watch_reading(false)
+    watch.last_sig = watch_signature(watch.last)
+    capture_epoch = capture_epoch + 1
+    lastStatus = "watch cleared (epoch bumped)"
 end
 
 -- ---------------------------------------------------------------------------
@@ -1433,6 +1332,8 @@ local function on_frame()
         if not ok then note_error("action " .. name, err) end
         return
     end
+    local ok_watch, err_watch = pcall(poll_watch)
+    if not ok_watch then note_error("poll_watch", err_watch) end
     if pending_verify == nil then return end
     pending_verify.count = (pending_verify.count or 0) + 1
     for i, target in ipairs(pending_verify.frames) do
@@ -1474,7 +1375,7 @@ end
 local function draw_ui()
     if not imgui.tree_node("Meal Buffet Probe v" .. PROBE_VERSION) then return end
     imgui.text("discovery probe - every SDK call is guarded")
-    imgui.text("quest: " .. (quest_state and "in quest" or "out of quest"))
+    imgui.text("quest: " .. tostring(quest_state_report().in_quest))
     imgui.text(meal_line())
     imgui.separator()
 
@@ -1498,33 +1399,28 @@ local function draw_ui()
     imgui.same_line()
     if imgui.button("Mark: eating now") then
         capture_epoch = capture_epoch + 1
-        lastStatus = "epoch " .. tostring(capture_epoch) .. " (capture is now labelled)"
+        lastStatus = "epoch " .. tostring(capture_epoch) .. " (watch events are now labelled)"
     end
     imgui.text("tag: " .. SNAPSHOT_TAGS[snapshot_tag_index]
         .. "  epoch: " .. capture_epoch)
 
     imgui.separator()
-    if imgui.button(armed and "Hooks armed" or "Arm hooks") then
-        local ok, err = pcall(arm_hooks)
-        if not ok then note_error("arm_hooks", err) end
+    if imgui.button(watch.on and "Watch: on" or "Watch: off") then
+        local ok, err = pcall(toggle_watch)
+        if not ok then note_error("toggle_watch", err) end
     end
     imgui.same_line()
-    if imgui.button("Dump capture") then
-        local ok, err = pcall(dump_capture)
-        if not ok then note_error("dump_capture", err) end
+    if imgui.button("Dump watch") then
+        local ok, err = pcall(dump_watch)
+        if not ok then note_error("dump_watch", err) end
     end
     imgui.same_line()
-    if imgui.button("Clear capture") then
-        -- Keep the hook inventory: hooks stay armed, only the events go.
-        captures.events = {}
-        captures.seen = {}
-        ret_samples = {}
-        evicted = 0
-        capture_epoch = capture_epoch + 1
-        lastStatus = "capture cleared (hooks stay armed, epoch bumped)"
+    if imgui.button("Clear watch") then
+        local ok, err = pcall(clear_watch)
+        if not ok then note_error("clear_watch", err) end
     end
-    imgui.text(string.format("captured: %d hooks, %d signatures, %d evicted",
-        #captures.hooks, #captures.events, evicted))
+    imgui.text(string.format("watch: %d polls, %d changes",
+        watch.polls, watch.changes))
 
     imgui.separator()
     if imgui.button("Clone meal") then request_action("clone") end
@@ -1546,9 +1442,9 @@ local function draw_ui()
     end
     imgui.separator()
     imgui.text("1) Dump types  +  Dump master data")
-    imgui.text("2) Arm hooks. Snapshot (tag=before). Eat at the canteen,")
+    imgui.text("2) Watch: on. Snapshot (tag=before). Eat at the canteen,")
     imgui.text("   with a voucher if that is the only way. Snapshot again")
-    imgui.text("   (tag=after_eat). Dump capture.")
+    imgui.text("   (tag=after_eat). Dump watch.")
     imgui.text("3) Clone meal -> Strip meal -> Apply clone on that meal;")
     imgui.text("   check max HP/stamina, attack/defence and food skills.")
     imgui.text("4) Repeat step 3 in a quest (camp canteen) for mid-quest.")
@@ -1560,33 +1456,6 @@ end
 -- registration
 -- ---------------------------------------------------------------------------
 
-local function register_quest_hooks()
-    local ok, err = pcall(function()
-        local t = sdk.find_type_definition("app.cQuestPlaying")
-        if not t then
-            log.warn("[MealApplyProbe] app.cQuestPlaying not found; quest label unavailable")
-            return
-        end
-        local m = t:get_method("update()")
-        if m then
-            sdk.hook(m, function(args)
-                local ok2, err2 = pcall(function()
-                    quest_state = sdk.to_managed_object(args[2])
-                end)
-                if not ok2 then note_error("quest.update hook", err2) end
-            end, nil)
-        end
-        local mx = t:get_method("exit()")
-        if mx then
-            sdk.hook(mx, function()
-                local ok2, err2 = pcall(function() quest_state = nil end)
-                if not ok2 then note_error("quest.exit hook", err2) end
-            end, nil)
-        end
-    end)
-    if not ok then note_error("register_quest_hooks", err) end
-end
-
 if not ALREADY_LOADED then
     re.on_frame(function()
         local ok, err = pcall(on_frame)
@@ -1596,9 +1465,8 @@ if not ALREADY_LOADED then
         local ok, err = pcall(draw_ui)
         if not ok then note_error("draw_ui", err) end
     end)
-    register_quest_hooks()
     log.info("[MealApplyProbe] loaded v" .. tostring(PROBE_VERSION)
-        .. " (discovery; capture hooks only after Arm hooks)")
+        .. " (discovery; no hooks, read-only watcher)")
 else
     log.info("[MealApplyProbe] duplicate load ignored (callbacks already registered)")
 end

@@ -87,9 +87,9 @@ Default Steam path:
 [size=5][b]Safety[/b][/size]
 
 [list]
-[*]Hooks are registered only while a meal is being applied; nothing runs in the background.
+[*]A small pointer-only hook runs on the quest state so the mod can label or gate in-quest use; there is no per-frame work beyond apply verification.
 [*]Never writes save data, never modifies game files, nothing talks to the network.
-[*]Every SDK call is guarded, so the script never throws into the game.
+[*]Every SDK call is guarded. As with any mod that writes live game state, a game-side access violation is still possible; use at your own risk.
 [/list]
 
 [line]

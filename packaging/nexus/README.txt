@@ -1,6 +1,10 @@
 Meal Buffet — REFramework mod for Monster Hunter Wilds
 ====================================================
 
+Status: in development. This readme ships inside the release archive. The
+repository currently builds only a discovery probe; the release script is not
+written yet.
+
 Applies any canteen meal buff to YOUR hunter on demand, without walking to the
 canteen and without spending a Meal Voucher. Pick one of the game's base meals
 (the list is read from the game's meal master data at runtime, never

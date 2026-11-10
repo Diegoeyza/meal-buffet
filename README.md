@@ -23,22 +23,24 @@ Pick one of the game's base meals, pick or reroll the extra meal skills, press
 
 ## How it works
 
-The active meal — buff, timer, and extra food skills — is a small state block
-on your local hunter, `app.cHunterMealEffect`.
+Working hypothesis, being verified by the probe: the active meal — buff, timer,
+and extra food skills — is a small state block on your local hunter,
+`app.cHunterMealEffect`.
 
 - Base meals and their skill pools are read from the game's meal master data at
   runtime, not from a table in the script.
-- **Apply** first tries the game's own meal apply path, so the result is the
+- **Apply** will first try the game's own meal apply path, so the result is the
   same state the canteen would produce. If that path is unavailable in the
   current context, the mod falls back to writing the meal state fields on
   `app.cHunterMealEffect` directly.
-- Development was probe-first: a dev probe (`reframework/meal_apply_probe.lua`,
-  not packaged) dumps the meal types, lists the master-data entries, and
-  verifies that an applied meal survives the next frames.
-- Only your own (user-controlled) hunter is ever selected; other players are
-  never touched. No save data is written, no game files are modified, nothing
-  talks to the network.
-- Everything is `pcall`-guarded: the script never throws into the game.
+- Development is probe-first: `reframework/meal_apply_probe.lua` (not packaged)
+  dumps the meal types and the master-data entries, captures the game's own eat
+  calls, and verifies that re-written meal fields survive the next frames.
+- Only your own (user-controlled) hunter is ever selected for writes; other
+  players are never touched. The master-player fallback is refused for writes.
+  No save data is written, no game files are modified, nothing talks to the
+  network.
+- Every SDK call is `pcall`-guarded.
 
 ## Requirements
 
@@ -99,7 +101,9 @@ balance mod.
   `after_voucher`), dumping the capture after each; then Clone → Strip → Apply
   clone, and repeat during a quest for the mid-quest case.
 - `./package.sh` builds both release zips into `dist/` once
-  `reframework/meal_buffet.lua` exists.
+  `reframework/meal_buffet.lua` exists. It reads the version from a
+  `local VERSION = "..."` line in that file, so the release script must declare
+  one.
 - Write paths only ever act on the user-controlled hunter; the master-player
   fallback is refused for writes.
 - If a game patch renames an internal field, the probe records a per-field miss

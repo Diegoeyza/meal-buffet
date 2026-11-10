@@ -72,6 +72,7 @@ local VERIFY_FRAMES = { 15, 120 }
 local lastStatus = "(idle)"
 local armed = false
 local pending_verify = nil
+local pending_action = nil   -- "clone" | "strip" | "apply", executed on the next frame
 local capture_epoch = 0
 local ret_samples = {}      -- method full name -> { values }
 
@@ -280,7 +281,21 @@ local function meal_object()
     local st, src = local_status()
     if not st then return nil, src end
     local meal = field_value(st, "_MealEffect")
-    if not meal then return nil, "no_meal_object" end
+    if meal == nil then
+        -- Field-name fallback: scan cHunterStatus for a field whose value is a
+        -- meal effect object. A rename then degrades to a slower path instead
+        -- of a session with no data.
+        local td = safe(function() return st:get_type_definition() end)
+        for _, f in ipairs(safe(function() return td and td:get_fields() end) or {}) do
+            local is_static = safe(function() return f:is_static() end)
+            local v = safe(function() return f:get_data(is_static and nil or st) end)
+            local tn = v and type_name(v)
+            if tn == "app.cHunterMealEffect" or tn == "app.cMealEffect" then
+                return v, src .. "+scan:" .. tostring(safe(function() return f:get_name() end)), st
+            end
+        end
+        return nil, "no_meal_object"
+    end
     return meal, src, st
 end
 
@@ -289,7 +304,9 @@ end
 local function meal_object_for_write()
     local meal, src, st = meal_object()
     if not meal then return nil, src end
-    if src ~= "user_control" then return nil, "not_user_control(" .. tostring(src) .. ")" end
+    if not tostring(src):find("^user_control") then
+        return nil, "not_user_control(" .. tostring(src) .. ")"
+    end
     return meal, src, st
 end
 
@@ -405,8 +422,14 @@ local function dump_type(typeName)
     local methods = safe(function() return td:get_methods() end)
     if methods then
         entry.methods = {}
-        for _, m in ipairs(methods) do
-            entry.methods[#entry.methods + 1] = describe_method(m)
+        entry.methods_total = #methods
+        local limit = #methods
+        if limit > 200 then
+            limit = 200
+            entry.methods_truncated = true
+        end
+        for i = 1, limit do
+            entry.methods[#entry.methods + 1] = describe_method(methods[i], typeName)
         end
     end
     return entry
@@ -554,6 +577,7 @@ end
 
 -- One data table: a collection of cData records (via _Values) or an array.
 local function dump_table(obj, fieldName, maxEntries)
+    resolve_text_helpers()
     local rec = { field = fieldName }
     local v = field_value(obj, fieldName)
     if v == nil then
@@ -577,9 +601,29 @@ local function dump_table(obj, fieldName, maxEntries)
     rec.entries = {}
     local limit = n
     if maxEntries and limit > maxEntries then limit = maxEntries end
+    -- 0-based is the proven indexer; one 1-based retry covers a build that
+    -- exposes a different collection view, and the failure is recorded so an
+    -- empty entries list is never mistaken for an empty table.
+    local base = 0
+    local first = (n > 0) and collection_get(values, 0) or nil
+    if first == nil and n > 0 then
+        base = 1
+        first = collection_get(values, 1)
+    end
+    rec.index_base = base
+    if first == nil and n > 0 then
+        rec.fetch_failed = true
+        return rec
+    end
     for i = 0, limit - 1 do
-        local item = collection_get(values, i)
-        if item == nil then break end
+        local item = collection_get(values, base + i)
+        if item == nil then
+            if i == 0 and first ~= nil then item = first end
+            if item == nil then
+                rec.fetch_failed_at = i
+                break
+            end
+        end
         local e = value_summary(item, 40)
         e.index = i
         local skill = safe(function() return item:call("get_MealSkill") end)
@@ -587,7 +631,7 @@ local function dump_table(obj, fieldName, maxEntries)
             e.meal_skill = safe_str(skill)
             e.name = meal_skill_name(skill)
             local desc_guid = safe(function() return item:call("get_Explain") end)
-            if desc_guid ~= nil then
+            if desc_guid ~= nil and get_message_m and get_message_m ~= false then
                 e.description = safe(function() return get_message_m:call(nil, desc_guid) end)
             end
         end
@@ -598,8 +642,9 @@ end
 
 -- Shallow field map of a data node (name, type, collection size). Used on
 -- _Setting and _FacilitySetting so the base-meal table can be found even if it
--- lives outside _FacilityDiningSetting.
-local function dump_node(obj, label, maxEntries)
+-- lives outside _FacilityDiningSetting. Names and counts only: entries are
+-- dumped for the dining node itself, which keeps this pass cheap.
+local function dump_node(obj, label)
     local out = { label = label, type = type_name(obj), fields = {} }
     if obj == nil then
         out.miss = true
@@ -609,20 +654,43 @@ local function dump_node(obj, label, maxEntries)
     for _, f in ipairs(safe(function() return td and td:get_fields() end) or {}) do
         local fname = safe(function() return f:get_name() end)
         if fname then
-            local v = field_value(obj, fname)
+            local is_static = safe(function() return f:is_static() end)
+            local v = safe(function() return f:get_data(is_static and nil or obj) end)
             local rec = { name = fname, type = type_name(v) }
             if is_primitive(v) then
                 rec.value = v
             else
-                local n = collection_count(dict_values(v))
-                rec.count = n
-                if n and maxEntries then
-                    local entries = dump_table(obj, fname, maxEntries)
-                    rec.sample = entries.entries
-                end
+                rec.count = collection_count(dict_values(v))
             end
             out.fields[#out.fields + 1] = rec
         end
+    end
+    return out
+end
+
+-- Which candidate manager objects are actually live singletons on this build.
+-- A type can exist without a singleton, so this is checked separately from
+-- dump_types.
+local SINGLETON_CANDIDATES = {
+    "app.VariousDataManager", "app.PlayerManager", "app.SaveDataManager",
+    "app.GameFlowManager", "app.MissionManager", "app.GUIManager",
+    "app.NpcManager", "app.OtomoManager", "app.PorterManager",
+    "app.FacilityManager", "app.cFacilityManager",
+    "app.FacilityDiningManager", "app.cFacilityDiningManager",
+    "app.DiningManager", "app.cDiningManager",
+    "app.MealManager", "app.cMealManager", "app.MealUtil", "app.cMealUtil",
+    "app.CampManager", "app.cCampManager", "app.RestaurantManager",
+    "app.CanteenManager", "app.HunterManager", "app.QuestManager",
+}
+
+local function probe_singletons()
+    local out = {}
+    for _, name in ipairs(SINGLETON_CANDIDATES) do
+        local obj = safe(function() return sdk.get_managed_singleton(name) end)
+        out[name] = {
+            exists = obj ~= nil,
+            type = obj and type_name(obj) or nil,
+        }
     end
     return out
 end
@@ -649,7 +717,7 @@ local function dump_master()
         { label = "VariousDataManager._Setting", obj = dbg.setting },
         { label = "_Setting._FacilitySetting", obj = dbg.facility },
     }) do
-        local ok, rec = pcall(dump_node, node.obj, node.label, 8)
+        local ok, rec = pcall(dump_node, node.obj, node.label)
         if ok then
             out.nodes[#out.nodes + 1] = rec
         else
@@ -677,6 +745,7 @@ local function dump_master()
     local random_skills = dump_table(dining, "_MealSkillRandomTable", MAX_MASTER_ENTRIES)
     out.meal_skill_table = meal_skills
     out.random_table = random_skills
+    out.singletons = probe_singletons()
 
     dump_json(OUT_MASTER, out)
     lastStatus = string.format("master: %d tables, meal=%s random=%s -> %s",
@@ -830,7 +899,9 @@ local function take_snapshot()
     states[#states + 1] = snap
     while #states > MAX_STATES do table.remove(states, 1) end
     dump_json(OUT_STATES, { states = states })
-    lastStatus = string.format("snapshot '%s' #%d -> %s", tag, #states, OUT_STATES)
+    snapshot_tag_index = snapshot_tag_index % #SNAPSHOT_TAGS + 1
+    lastStatus = string.format("snapshot '%s' #%d -> %s (next tag: %s)",
+        tag, #states, OUT_STATES, SNAPSHOT_TAGS[snapshot_tag_index])
     log.info("[MealApplyProbe] " .. lastStatus)
     return snap
 end
@@ -845,22 +916,46 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Meal-state classes first so the per-type budget cannot be spent elsewhere.
+-- `all = true` means: hook every method except getters/setters and teardown,
+-- because the call that populates a meal is not guaranteed to have "meal" in
+-- its name. The dining/canteen classes are guesses, so they keep the word
+-- filter.
 local HOOK_TYPES = {
-    "app.cHunterMealEffect", "app.cMealEffect", "app.cHunterMealSkillParamInfo",
-    "app.FacilityDining", "app.cFacilityDining",
-    "app.FacilityDiningManager", "app.cFacilityDiningManager",
-    "app.DiningManager", "app.cDiningManager",
-    "app.MealManager", "app.cMealManager", "app.MealUtil", "app.cMealUtil",
-    "app.FacilityManager", "app.cFacilityManager",
-    "app.CampManager", "app.cCampManager", "app.CampUtil",
-    "app.GuiDining", "app.cGuiDining", "app.GuiMeal", "app.cGuiMeal",
-    "app.GuiRestaurant", "app.cGuiRestaurant",
+    { name = "app.cHunterMealEffect", all = true },
+    { name = "app.cMealEffect", all = true },
+    { name = "app.cHunterMealSkillParamInfo", all = true },
+    { name = "app.FacilityDining" },
+    { name = "app.cFacilityDining" },
+    { name = "app.FacilityDiningManager" },
+    { name = "app.cFacilityDiningManager" },
+    { name = "app.DiningManager" },
+    { name = "app.cDiningManager" },
+    { name = "app.MealManager" },
+    { name = "app.cMealManager" },
+    { name = "app.MealUtil" },
+    { name = "app.cMealUtil" },
+    { name = "app.FacilityManager" },
+    { name = "app.cFacilityManager" },
+    { name = "app.CampManager" },
+    { name = "app.cCampManager" },
+    { name = "app.CampUtil" },
+    { name = "app.GuiDining" },
+    { name = "app.cGuiDining" },
+    { name = "app.GuiMeal" },
+    { name = "app.cGuiMeal" },
+    { name = "app.GuiRestaurant" },
+    { name = "app.cGuiRestaurant" },
 }
 
 local HOOK_WORDS = {
     "apply", "eat", "order", "cook", "dining", "meal", "serve", "consume",
     "voucher", "decide", "select", "initialize", "create",
 }
+
+-- Words that are only interesting when the method name also names a meal
+-- concept; otherwise UI selectors and object factories flood the capture.
+local RESTRICTED_WORDS = { select = true, decide = true, create = true, initialize = true }
+local MEAL_WORDS = { "meal", "dining", "canteen", "cook", "voucher" }
 
 local HOOK_SKIP = {
     "^get_", "^is_", "^set_", "^update", "^lateUpdate", "^draw", "^calc",
@@ -870,7 +965,14 @@ local HOOK_SKIP = {
 local captures = { hooks = {}, events = {}, seen = {}, by_type = {} }
 local evicted = 0
 
-local function name_is_hookable(name)
+local function contains_any(s, words)
+    for _, w in ipairs(words) do
+        if s:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+local function name_is_hookable(name, hook_all)
     if name == nil then return false end
     local lower = name:lower()
     for _, pat in ipairs(HOOK_SKIP) do
@@ -878,15 +980,20 @@ local function name_is_hookable(name)
             -- reset/clear on a meal-shaped class can be the "end the meal"
             -- call; keep them, drop the rest.
             if pat == "^reset" or pat == "^clear" then
-                return lower:find("meal", 1, true) ~= nil
-                    or lower:find("dining", 1, true) ~= nil
+                return hook_all or contains_any(lower, MEAL_WORDS)
             end
             return false
         end
     end
+    if hook_all then return true end
     -- Lua patterns have no alternation, so the words are matched one by one.
     for _, word in ipairs(HOOK_WORDS) do
-        if lower:find(word, 1, true) then return true end
+        if lower:find(word, 1, true) then
+            if RESTRICTED_WORDS[word] then
+                return contains_any(lower, MEAL_WORDS)
+            end
+            return true
+        end
     end
     return false
 end
@@ -961,16 +1068,23 @@ local function arm_hooks()
     local registered, failed, dupes = 0, 0, 0
     local seen_full = {}
 
-    for _, typeName in ipairs(HOOK_TYPES) do
+    for _, hookType in ipairs(HOOK_TYPES) do
         if registered >= MAX_HOOKS then break end
+        local typeName = hookType.name
         local td = safe(sdk.find_type_definition, typeName)
         if td then
             local per_type = 0
-            captures.by_type[typeName] = captures.by_type[typeName] or { hooked = {}, skipped = 0 }
+            captures.by_type[typeName] = captures.by_type[typeName] or { hooked = {}, skipped = 0, candidates = 0 }
+            captures.by_type[typeName].all_methods = hookType.all == true
             for _, m in ipairs(safe(function() return td:get_methods() end) or {}) do
-                if registered >= MAX_HOOKS or per_type >= PER_TYPE_HOOKS then break end
+                if registered >= MAX_HOOKS then break end
+                if per_type >= PER_TYPE_HOOKS then
+                    captures.by_type[typeName].truncated = true
+                    break
+                end
                 local mname = safe(function() return m:get_name() end)
-                if name_is_hookable(mname) then
+                if name_is_hookable(mname, hookType.all) then
+                    captures.by_type[typeName].candidates = captures.by_type[typeName].candidates + 1
                     local desc = describe_method(m, typeName)
                     local full = desc.full or (typeName .. "." .. tostring(mname))
                     if seen_full[full] then
@@ -986,9 +1100,15 @@ local function arm_hooks()
                                     -- method receives an object of its declaring
                                     -- type in args[2]; a static one receives its
                                     -- first parameter there instead.
-                                    local is_instance = desc.static == true
-                                        or (desc.static == nil and this_type ~= nil
-                                            and this_type == desc.declaring)
+                                    local is_instance
+                                    if desc.static == false then
+                                        is_instance = true
+                                    elseif desc.static == true then
+                                        is_instance = false
+                                    else
+                                        is_instance = this_type ~= nil
+                                            and this_type == desc.declaring
+                                    end
                                     local base = is_instance and 3 or 2
                                     local argstrings = {}
                                     for i, ptype in ipairs(desc.params) do
@@ -1140,16 +1260,24 @@ local function clone_meal()
 end
 
 local function write_fields(obj, typeName, fields)
-    local written, missing = 0, {}
+    local written, missing, mismatches = 0, {}, {}
     for _, rec in ipairs(fields or {}) do
         if field_value(obj, rec.name) == nil then
             missing[#missing + 1] = rec.name
         else
             local ok = write_field(obj, typeName, rec.name, rec.value)
             if ok then written = written + 1 end
+            local got = field_value(obj, rec.name)
+            if tostring(got) ~= tostring(rec.value) then
+                mismatches[#mismatches + 1] = {
+                    name = rec.name,
+                    wanted = tostring(rec.value),
+                    got = tostring(got),
+                }
+            end
         end
     end
-    return written, missing, readback_after_write(obj, fields)
+    return written, missing, readback_after_write(obj, fields), mismatches
 end
 
 local function strip_meal()
@@ -1165,19 +1293,31 @@ local function strip_meal()
     end
     local out = {
         action = "strip",
-        before = meal_state("after_clone_before_strip"),
+        epoch = capture_epoch,
+        src = src,
+        before = meal_state("before_strip"),
     }
-    local n, missing, rb = write_fields(meal, MEAL_TYPE, STRIP_FIELDS)
+    local n, missing, rb, mismatches = write_fields(meal, MEAL_TYPE, STRIP_FIELDS)
+    -- Deliberately untouched by the strip: recorded so "strip worked" is not
+    -- ambiguous when the food-skill list still describes the old meal.
     out.writes = {
         fields = n,
         missing = missing,
         readback = rb,
+        mismatches = mismatches,
+        untouched = {
+            _TimerMax = safe_str(field_value(meal, "_TimerMax")),
+            skill_param_info = tostring(field_value(meal, "_SkillParamInfo")),
+            skill_count = skill_entries(field_value(meal, "_SkillParamInfo")).count,
+        },
         pointers = { meal = tostring(meal) },
     }
     out.after = meal_state("after_strip")
+    if clone ~= nil then clone.was_stripped = true end
+    pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {}, out = out }
     dump_json(OUT_APPLY, out)
-    lastStatus = string.format("strip: %d/%d written, readback=%s",
-        n, #STRIP_FIELDS, tostring(rb._DurationTimer))
+    lastStatus = string.format("strip: %d/%d written, mismatches=%d, verifying +15/+120",
+        n, #STRIP_FIELDS, #mismatches)
     log.info("[MealApplyProbe] " .. lastStatus)
     return out
 end
@@ -1201,8 +1341,19 @@ local function apply_clone()
 
     local out = {
         action = "apply_clone",
+        epoch = capture_epoch,
+        src = src,
         clone_wall = clone.wall,
+        clone_was_stripped = clone.was_stripped == true,
         before = meal_state("before_apply"),
+        clone_data = {
+            meal_pointer = clone.meal_pointer,
+            inner_pointer = clone.inner_pointer,
+            param_pointer = clone.param_pointer,
+            meal_fields = clone.meal_fields,
+            inner_fields = clone.inner_fields,
+            skills = clone.skills,
+        },
         pointers = {
             meal = tostring(meal),
             clone_meal = clone.meal_pointer,
@@ -1213,30 +1364,36 @@ local function apply_clone()
             param_live = is_managed(clone.param_info),
             inner_type = is_managed(clone.inner) and type_name(clone.inner) or nil,
             param_type = is_managed(clone.param_info) and type_name(clone.param_info) or nil,
+            inner_still_attached = tostring(field_value(meal, "_MealEffect")) == clone.inner_pointer,
+            param_still_attached = tostring(field_value(meal, "_SkillParamInfo")) == clone.param_pointer,
         },
     }
 
-    local n1, miss1, rb1 = write_fields(meal, MEAL_TYPE, clone.meal_fields)
-    local n2, miss2, rb2, n3 = 0, {}, {}, 0
-    if is_managed(clone.inner) and type_name(clone.inner) == "app.cMealEffect" then
-        n2, miss2, rb2 = write_fields(clone.inner, "app.cMealEffect", clone.inner_fields)
-        write_field(meal, MEAL_TYPE, "_MealEffect", clone.inner)
+    local n1, miss1, rb1, mis1 = write_fields(meal, MEAL_TYPE, clone.meal_fields)
+    local n2, miss2, rb2, mis2, n3 = 0, {}, {}, {}, 0
+    if out.pointers.inner_still_attached and is_managed(clone.inner)
+        and type_name(clone.inner) == "app.cMealEffect" then
+        n2, miss2, rb2, mis2 = write_fields(clone.inner, "app.cMealEffect", clone.inner_fields)
+    elseif is_managed(clone.inner) then
+        out.inner_write_skipped = "stale_or_wrong_type"
     end
-    if is_managed(clone.param_info)
+    if out.pointers.param_still_attached and is_managed(clone.param_info)
         and type_name(clone.param_info) == "app.cHunterMealSkillParamInfo" then
         if write_field(meal, MEAL_TYPE, "_SkillParamInfo", clone.param_info) then n3 = 1 end
+    elseif is_managed(clone.param_info) then
+        out.param_write_skipped = "stale_or_wrong_type"
     end
 
     out.writes = {
-        meal_fields = n1, meal_missing = miss1, meal_readback = rb1,
-        inner_fields = n2, inner_missing = miss2, inner_readback = rb2,
+        meal_fields = n1, meal_missing = miss1, meal_readback = rb1, meal_mismatches = mis1,
+        inner_fields = n2, inner_missing = miss2, inner_readback = rb2, inner_mismatches = mis2,
         param_info_written = n3,
     }
     out.after_apply = meal_state("after_apply")
     pending_verify = { frames = VERIFY_FRAMES, done = {}, readings = {}, out = out }
     dump_json(OUT_APPLY, out)
-    lastStatus = string.format("apply clone: %d+%d fields, param=%s, verifying +15/+120",
-        n1, n2, tostring(n3 == 1))
+    lastStatus = string.format("apply clone: %d+%d fields, mismatches=%d+%d, verifying +15/+120",
+        n1, n2, #mis1, #mis2)
     log.info("[MealApplyProbe] " .. lastStatus)
     return out
 end
@@ -1245,7 +1402,33 @@ end
 -- frame callback: only alive while a verification is scheduled
 -- ---------------------------------------------------------------------------
 
+-- Write actions run on the frame callback, not inside the UI draw pass: the
+-- game thread reads the same fields, so a torn write during the render pass is
+-- the one avoidable crash path.
+local ACTIONS = {
+    clone = clone_meal,
+    strip = strip_meal,
+    apply = apply_clone,
+}
+
+local function request_action(name)
+    if ACTIONS[name] == nil then return end
+    if pending_action ~= nil then
+        lastStatus = "busy: " .. tostring(pending_action)
+        return
+    end
+    pending_action = name
+    lastStatus = "queued: " .. name .. " (runs next frame)"
+end
+
 local function on_frame()
+    if pending_action ~= nil then
+        local name = pending_action
+        pending_action = nil
+        local ok, err = pcall(ACTIONS[name])
+        if not ok then note_error("action " .. name, err) end
+        return
+    end
     if pending_verify == nil then return end
     pending_verify.count = (pending_verify.count or 0) + 1
     for i, target in ipairs(pending_verify.frames) do
@@ -1328,7 +1511,9 @@ local function draw_ui()
     end
     imgui.same_line()
     if imgui.button("Clear capture") then
-        captures = { hooks = {}, events = {}, seen = {}, by_type = {} }
+        -- Keep the hook inventory: hooks stay armed, only the events go.
+        captures.events = {}
+        captures.seen = {}
         ret_samples = {}
         evicted = 0
         capture_epoch = capture_epoch + 1
@@ -1338,20 +1523,11 @@ local function draw_ui()
         #captures.hooks, #captures.events, evicted))
 
     imgui.separator()
-    if imgui.button("Clone meal") then
-        local ok, err = pcall(clone_meal)
-        if not ok then note_error("clone_meal", err) end
-    end
+    if imgui.button("Clone meal") then request_action("clone") end
     imgui.same_line()
-    if imgui.button("Strip meal") then
-        local ok, err = pcall(strip_meal)
-        if not ok then note_error("strip_meal", err) end
-    end
+    if imgui.button("Strip meal") then request_action("strip") end
     imgui.same_line()
-    if imgui.button("Apply clone") then
-        local ok, err = pcall(apply_clone)
-        if not ok then note_error("apply_clone", err) end
-    end
+    if imgui.button("Apply clone") then request_action("apply") end
     imgui.text(clone and ("clone: " .. clone.wall .. "  fields=" .. #clone.meal_fields
         .. "  skills=" .. tostring(clone.skills.count)) or "clone: none")
 

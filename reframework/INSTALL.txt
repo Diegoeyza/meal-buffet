@@ -1,6 +1,10 @@
 Meal Buffet — REFramework mod for Monster Hunter Wilds
 ====================================================
 
+Status: in development. This note ships with the release package. The current
+repository only builds a discovery probe (reframework/meal_apply_probe.lua);
+there is no release script yet, so package.sh exits with "not found".
+
 What it does
 ------------
 Applies any canteen meal buff to your own hunter on demand, without going to

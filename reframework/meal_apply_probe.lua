@@ -795,7 +795,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local SNAPSHOT_TAGS = {
-    "before", "after_normal", "after_voucher", "after_strip", "after_apply", "mid_quest",
+    "before", "after_eat", "after_voucher", "after_strip", "after_apply", "mid_quest",
 }
 local snapshot_tag_index = 1
 local states = nil       -- loaded lazily, appended in memory
@@ -1546,12 +1546,13 @@ local function draw_ui()
     end
     imgui.separator()
     imgui.text("1) Dump types  +  Dump master data")
-    imgui.text("2) Arm hooks. Tag=before, Snapshot. Eat a normal meal.")
-    imgui.text("   Tag=after_normal, Snapshot. Dump capture.")
-    imgui.text("3) Strip, tag=before, Snapshot. Eat a VOUCHER meal.")
-    imgui.text("   Tag=after_voucher, Snapshot. Dump capture.")
-    imgui.text("4) Clone meal -> Strip -> Apply clone; check stats + food skills.")
-    imgui.text("   Repeat step 4 during a quest to test the mid-quest case.")
+    imgui.text("2) Arm hooks. Snapshot (tag=before). Eat at the canteen,")
+    imgui.text("   with a voucher if that is the only way. Snapshot again")
+    imgui.text("   (tag=after_eat). Dump capture.")
+    imgui.text("3) Clone meal -> Strip meal -> Apply clone on that meal;")
+    imgui.text("   check max HP/stamina, attack/defence and food skills.")
+    imgui.text("4) Repeat step 3 in a quest (camp canteen) for mid-quest.")
+    imgui.text("5) Tell the agent, then send the data/*.json files.")
     imgui.tree_pop()
 end
 

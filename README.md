@@ -1,15 +1,15 @@
 # Meal Buffet
 
-> **Status: v0.1.1.** Apply verified in game in the hub, at camp and during a
-> quest: the meal builder uses the game's own `app.cMealEffect`, and the
-> applied meal lists the same food skills as a real canteen meal.
+> **Status: v0.2.0.** Meal apply is verified in the hub, at camp and during a
+> quest. Consumable buffs, the user presets and the auto-apply toggles are
+> verified in game as well.
 
-**A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal to your
-own hunter on demand, from the REFramework menu — no walk to the canteen, no
-Meal Voucher, no ingredients spent.
+**A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal, and
+any consumable buff (drugs, seeds, pills, powders, drinks), to your own hunter
+on demand from the REFramework menu — no canteen trip, no item used, no voucher.
 
-Pick a meal set, choose or reroll the two extra buffs, press **Apply**. Works in
-the hub, at camp, and during a quest.
+Pick a meal set or tick the consumables you want, press Apply. Works in the hub,
+at camp, and during a quest.
 
 ## Replaces Meal Stripper
 
@@ -17,7 +17,7 @@ Meal Buffet includes the same one-click meal strip: the **Clear meal** button.
 It also removes the need to strip before eating again — applying a new meal
 replaces the active one directly. Remove Meal Stripper if it is installed.
 
-## What it does
+## Meals
 
 - **Every meal set**: the list is enumerated from the game's own meal master
   data (Kunafa, Azuz, Slid, Suja and the special/event sets), so nothing is
@@ -30,14 +30,42 @@ replaces the active one directly. Remove Meal Stripper if it is installed.
 - **Clear meal**: removes the active meal (max HP/stamina, attack/defence, food
   skills, timer and flags) — the Meal Stripper behaviour.
 - **No cost**: no Meal Voucher, no ingredients, no canteen visit.
-- **Remembers the selection**: saved to `reframework/data/meal_buffet.json`.
+
+## Consumables
+
+- **14 buff items**, grouped as Drugs, Seeds, Pills, Powders and Drinks:
+  Demondrug / Mega Demondrug, Armorskin / Mega Armorskin, Might Seed, Adamant
+  Seed, Might Pill, Adamant Pill, Demon Powder, Hardshell Powder, Dash Juice,
+  Immunizer, Hot Drink, Cool Drink.
+- **Nothing is consumed** and nothing has to be in your pouch: the game's own
+  `app.cHunterItemBuff:activateItemBuff(type, 1.0, timeScale)` is called, so
+  the buff, its duration and its strength are the game's own.
+- **One click per buff, or batch**: tick the buffs and press *Apply selected*,
+  use a preset, or press *Apply* on a single row.
+- **Slot rules**: drugs and their mega versions share a slot, and a seed and its
+  pill share a slot — applying one replaces the other.
+- **Item Prolonger** (Enduring Jewel): the mod reads the multiplier from your
+  hunter (`getSkillItemUsePowerUpTimeRate`), shows it, and can be toggled off.
+  A manual level override (Lv0–3) is available for testing.
+- **Presets**: one built-in *Standard* set plus four unnamed slots. Tick the
+  buffs you want and press *Save selection* on a slot; it applies later as-is.
+- **Auto preset on quest start**: applies the chosen preset once when a quest
+  begins (no repeated application during the hunt).
+- **Auto Hot/Cool Drink on quest start**: one drink per quest, chosen from the
+  quest's locale:
+  - `ST103` Oilwell Basin → Cool Drink
+  - `ST104` Iceshard Cliffs → Hot Drink
+  - `ST402` Omega Planetes arena → Hot Drink
+  - anything else → no drink
+- **Remembers everything**: ticked buffs, the four slots, both auto toggles and
+  the Item Prolonger setting live in `reframework/data/meal_buffet.json`.
 
 ## How it works
 
 The active meal is `app.cHunterMealEffect` on the local hunter; the meal
 definition itself is an `app.cMealEffect` attached to it.
 
-Per apply, the mod:
+Per meal apply, the mod:
 
 1. reads the chosen canteen set from
    `app.user_data.MealDataLobby` (via `app.MealUtil.getMealDataLobby`),
@@ -49,10 +77,16 @@ Per apply, the mod:
 5. writes the end state a real canteen eat leaves behind:
    `_DurationTimer = _TimerMax = minutes * 60`, both active flags true.
 
-Meal sets, fixed skills and the buff pool are read from game master data at
-runtime. Only the user-controlled hunter is ever targeted. No save data is
-written, no game files are modified, nothing talks to the network, and every SDK
-call is `pcall`-guarded.
+Consumable buffs are applied through `app.cHunterStatus._ItemBuff` with the
+game's own `activateItemBuff(buffType, effectRate, timeScale)`: the effect rate
+is `1.0` and the time scale is `1.0` or the Item Prolonger multiplier. Clearing
+a buff calls `deactivateItemBuff(buffType)`. The quest toggles poll
+`app.MissionManager.get_IsPlayingQuest()` a few times a second (no hooks), and
+the Hot/Cool pick reads the locale from the active quest data.
+
+Only the user-controlled hunter is ever targeted. No save data is written, no
+game files are modified, nothing talks to the network, and every SDK call is
+`pcall`-guarded.
 
 ## Requirements
 
@@ -75,39 +109,54 @@ game folder (Nexus/Vortex).
 ## Usage
 
 1. REFramework menu (Insert) → **Script Generated UI** → **Meal Buffet**.
-2. `< Prev` / `Next >` pick a meal set. Base stats and fixed skills are listed.
-3. For each extra buff slot, `<` / `>` cycles `game roll` → `none` → each
+2. Top of the panel: **Meals** / **Consumables**.
+
+Meals:
+
+1. `< Prev` / `Next >` pick a meal set. Base stats and fixed skills are listed.
+2. For each extra buff slot, `<` / `>` cycles `game roll` → `none` → each
    specific buff; picked buffs show their description.
-4. Press **Apply meal**. The `active skills` list shows what landed.
-5. Press **Clear meal** to remove the active meal.
+3. Press **Apply meal**. The `active skills` list shows what landed.
+4. Press **Clear meal** to remove the active meal.
+
+Consumables:
+
+1. Tick the buffs you want, then **Apply selected**, or press **Apply** on a row.
+2. **Standard** applies the built-in set; **Save selection** stores the ticked
+   buffs into one of the four slots.
+3. **Item Prolonger** toggles the duration bonus; `<` `>` override the level.
+4. **Auto preset on quest start** / **Auto Hot/Cool Drink on quest start** are
+   one-shot per quest. The panel shows the current `stage`/`area` values so the
+   drink decision is visible.
 
 Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
 ## Status and limits
 
-v0.1.1. Apply and Clear are verified in the hub, at camp and during a quest;
-the food-skill list matches a real meal.
-Meal sets come from master data, so a game patch that renames an internal field
-or method makes the panel report the failing call instead of throwing — a patch
-may still need a mod update. Treat it as a single-player / co-op convenience
-tool rather than a balance mod.
+v0.2.0. Meals and consumables are verified in game (hub and quests), including
+presets, the Item Prolonger toggle and the auto toggles. Meal sets and item
+buffs are the game's own data, so a game patch that renames an internal field or
+method makes the panel report the failing call instead of throwing — a patch may
+still need a mod update. Treat it as a single-player / co-op convenience tool
+rather than a balance mod.
 
 See [CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 
-- The apply path was established with two development probes (type surface and
-  meal master data, then the game's apply API). They are not shipped and were
-  removed from the working tree after verification; earlier commits in the git
-  history contain them if a future game patch needs the investigation repeated.
+- The apply paths were established with development probes (meal type surface and
+  master data, meal apply API, then the consumable item-buff API). They are not
+  shipped; `tools/consumables_probe.lua` is kept for future game patches, and the
+  meal probes remain in the git history.
 - `./package.sh` builds both release zips into `dist/`. It reads the version
   from a `local VERSION = "..."` line in `reframework/meal_buffet.lua`.
 - If a game patch renames an internal field or method, the mod reports the
   failing call in its status line instead of throwing.
-- Syntax gate: the script runs under LuaJIT (Lua 5.1). Check a change with a
-  real Lua 5.1 compiler, not only a modern Lua parser — 5.4-only syntax, and
-  even a nested `...`, passes most parsers and fails to load in game
-  (`cannot use '...' outside a vararg function`).
+- Syntax gate: the script runs under LuaJIT (Lua 5.1), and REFramework also
+  provides `table.unpack`. Check a change with a real Lua 5.1 compiler, not only
+  a modern Lua parser — 5.4-only syntax, and even a nested `...`, passes most
+  parsers and fails to load in game (`cannot use '...' outside a vararg
+  function`).
 - Packaging notes for the Nexus release live in `packaging/nexus/`
   (`NEXUS_PAGE.md`, `README.txt`, `MEAL_STRIPPER_RETIREMENT.md`).
 

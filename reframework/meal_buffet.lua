@@ -1,5 +1,6 @@
 --
--- meal_buffet.lua v0.1.0 — apply any canteen meal to your hunter on demand
+-- meal_buffet.lua v0.2.0 — apply any canteen meal or consumable buff to your
+-- hunter on demand
 --
 -- What it does:
 --   * lists the canteen's meal sets (read from the game's own master data:
@@ -15,6 +16,11 @@
 --       then the timer/flags a real eat leaves behind
 --         _DurationTimer = _TimerMax = minutes * 60, both active flags true
 --   * shows the meal that is currently on the hunter, with its skill names.
+--   * consumables: activates the game's own item buffs (drugs, seeds, pills,
+--     powders, drinks) with
+--       app.cHunterItemBuff:activateItemBuff(type, 1.0, timeScale)
+--     where timeScale is 1.0 or the Item Prolonger multiplier. No item is
+--     consumed and nothing has to be in the pouch.
 --
 -- Proven on the current build by reframework/meal_apply_probe2.lua: the
 -- applied meal lists the same food skills in game as a real canteen meal.
@@ -35,7 +41,7 @@ local log = log
 local imgui = imgui
 local unpack = unpack or table.unpack
 
-local VERSION = "0.1.1"
+local VERSION = "0.2.0"
 local CONFIG_FILE = "meal_buffet.json"
 
 local ALREADY_LOADED = _G.MEAL_BUFFET_LOADED == true
@@ -65,8 +71,92 @@ local STRIP_FIELDS = {
 
 local lastStatus = "(idle)"
 local pending_action = nil
+local pending_con = nil
 local verify_frames = 0
 local verify_pending = nil
+
+-- ---------------------------------------------------------------------------
+-- consumable buffs
+-- ---------------------------------------------------------------------------
+-- The game owns the buff list and the base durations: activateItemBuff takes
+-- (type, effect rate, time scale) and applies its own base time multiplied by
+-- the scale. `secs` below is only the UI preview of that base, measured on the
+-- current build (probe v3/v4); the applied time always comes from the game.
+
+local ITEM_BUFF_ENUM = "app.HunterDef.ITEM_BUFF_TYPE"
+
+local CONSUMABLES = {
+    -- enum            group      label               secs  effect
+    { enum = "KIJIN_DRINK",   group = "Drugs",   label = "Demondrug",        secs = 1800, effect = "Attack up",                  struct = "_KijinDrink" },
+    { enum = "KIJIN_DRINK_G", group = "Drugs",   label = "Mega Demondrug",   secs = 1800, effect = "Attack up (stronger)",       struct = "_KijinDrink_G" },
+    { enum = "KOUKA",         group = "Drugs",   label = "Armorskin",        secs = 1800, effect = "Defence up",                 struct = "_KoukaDrink" },
+    { enum = "KOUKA_G",       group = "Drugs",   label = "Mega Armorskin",   secs = 1800, effect = "Defence up (stronger)",      struct = "_KoukaDrink_G" },
+    { enum = "KAIRIKI",       group = "Seeds",   label = "Might Seed",       secs = 180,  effect = "Attack up",                  field = "_Kairiki_Timer" },
+    { enum = "NINTAI",        group = "Seeds",   label = "Adamant Seed",     secs = 180,  effect = "Defence up",                 field = "_Nintai_Timer" },
+    { enum = "KAIRIKI_G",     group = "Pills",   label = "Might Pill",       secs = 21,   effect = "Attack up (short, strong)",  field = "_Kairiki_G_Timer" },
+    { enum = "NINTAI_G",      group = "Pills",   label = "Adamant Pill",     secs = 90,   effect = "Defence up (short, strong)", field = "_Nintai_G_Timer" },
+    { enum = "KIJIN_POWDER",  group = "Powders", label = "Demon Powder",     secs = 180,  effect = "Attack up (area)",           field = "_KijinPowder_Timer" },
+    { enum = "KOUKA_POWDER",  group = "Powders", label = "Hardshell Powder", secs = 180,  effect = "Defence up (area)",          field = "_KoukaPowder_Timer" },
+    { enum = "DASH_JUICE",    group = "Drinks",  label = "Dash Juice",       secs = 180,  effect = "Stamina drain down",         field = "_DashJuice_Timer" },
+    { enum = "IMMUNIZER",     group = "Drinks",  label = "Immunizer",        secs = 300,  effect = "Red health recovery",        field = "_Immunizer_Timer" },
+    { enum = "HOT_DRINK",     group = "Drinks",  label = "Hot Drink",        secs = 600,  effect = "Cold resistance",            field = "_HotDrink_Timer" },
+    { enum = "COOLER_DRINK",  group = "Drinks",  label = "Cool Drink",       secs = 600,  effect = "Heat resistance",            field = "_CoolerDrink_Timer" },
+}
+
+-- Buffs that occupy the same slot: applying one removes the other.
+local CON_EXCLUSIVE = {
+    KIJIN_DRINK = "atk_drink", KIJIN_DRINK_G = "atk_drink",
+    KOUKA = "def_drink",       KOUKA_G = "def_drink",
+    KAIRIKI = "atk_seed",      KAIRIKI_G = "atk_seed",
+    NINTAI = "def_seed",       NINTAI_G = "def_seed",
+}
+
+-- One built-in set plus four user slots. A slot stores the ticked buffs when
+-- you press "Save selection"; slots are not named.
+local STANDARD_PRESET = { "KIJIN_DRINK_G", "KOUKA_G", "KAIRIKI", "NINTAI",
+                          "KIJIN_POWDER", "KOUKA_POWDER", "DASH_JUICE" }
+
+local CUSTOM_SLOTS = 4
+local custom_presets = { {}, {}, {}, {} }
+
+-- index 1 = Standard, 2..CUSTOM_SLOTS+1 = the user slots
+local function preset_at(i)
+    if i == 1 then return "Standard", STANDARD_PRESET end
+    local slot = i - 1
+    local list = custom_presets[slot]
+    if list and #list > 0 then return "Set " .. slot, list end
+    return "Set " .. slot, nil
+end
+
+local function preset_count()
+    return CUSTOM_SLOTS + 1
+end
+
+local CON_GROUPS = { "Drugs", "Seeds", "Pills", "Powders", "Drinks" }
+
+-- Item Prolonger (Enduring Jewel): +10 / +25 / +50 %
+local PROLONGER_RATE = { [0] = 1.0, [1] = 1.1, [2] = 1.25, [3] = 1.5 }
+
+local con = {
+    ready = false,
+    enum = {},          -- enum name -> value
+    rate = 1.0,         -- Item Prolonger multiplier on the hunter right now
+    level = 0,
+    error = nil,
+}
+
+local con_selected = {}       -- enum name -> true
+local prolonger_on = true     -- apply the multiplier when activating
+local prolonger_level = nil   -- nil = follow the hunter's skill
+local panel = "meals"         -- "meals" | "consumables"
+local auto_on = false         -- apply a preset when a quest starts
+local auto_drinks = false     -- apply Hot/Cool Drink in hot/cold areas
+local auto_preset = 1         -- 1 = Standard, 2..5 = user slots
+local auto_tick = 0
+local auto_in_quest = false
+local auto_drink_done = false   -- one drink per quest
+local auto_start_frames = 0     -- frames since the quest started
+
 
 -- ---------------------------------------------------------------------------
 -- helpers (same shapes the probes prove on this build)
@@ -298,9 +388,9 @@ local function character_of(inst, pi)
     return field_value(inst, "<Character>k__BackingField") or field_value(inst, "_Character")
 end
 
-local function local_status()
+local function local_character()
     local pm = safe(function() return sdk.get_managed_singleton("app.PlayerManager") end)
-    if not pm then return nil, "no_player_manager" end
+    if not pm then return nil, nil, "no_player_manager" end
     local arr = instanced_array(pm)
     if arr then
         for i = 0, 7 do
@@ -311,11 +401,17 @@ local function local_status()
             local st = ch and call_method(ch, "get_HunterStatus")
             if st and call_method(st, "get_IsUserControl") == true
                 and call_method(st, "get_IsNpc") ~= true then
-                return st, "user_control"
+                return ch, st, "user_control"
             end
         end
     end
-    return nil, "no_user_controlled_status"
+    return nil, nil, "no_user_controlled_status"
+end
+
+local function local_status()
+    local _, st, src = local_character()
+    if not st then return nil, src end
+    return st, src
 end
 
 local function meal_object()
@@ -485,15 +581,60 @@ local function load_config()
     end
     if type(cfg.randoms_enabled) == "boolean" then randoms_enabled = cfg.randoms_enabled end
     if type(cfg.descriptions) == "boolean" then descriptions_on = cfg.descriptions end
+    if type(cfg.prolonger_on) == "boolean" then prolonger_on = cfg.prolonger_on end
+    if type(cfg.prolonger_level) == "number" then
+        local lv = math.floor(cfg.prolonger_level)
+        if lv >= 0 and lv <= 3 then prolonger_level = lv end
+    end
+    if cfg.panel == "consumables" or cfg.panel == "meals" then panel = cfg.panel end
+    if type(cfg.auto_on) == "boolean" then auto_on = cfg.auto_on end
+    if type(cfg.auto_drinks) == "boolean" then auto_drinks = cfg.auto_drinks end
+    if type(cfg.auto_preset) == "number" then
+        local idx = math.floor(cfg.auto_preset)
+        if idx >= 1 and idx <= preset_count() then auto_preset = idx end
+    end
+    if type(cfg.consumables) == "table" then
+        con_selected = {}
+        for name, v in pairs(cfg.consumables) do
+            if type(name) == "string" and v == true then con_selected[name] = true end
+        end
+    end
+    if type(cfg.custom_presets) == "table" then
+        local valid = {}
+        for _, spec in ipairs(CONSUMABLES) do valid[spec.enum] = true end
+        custom_presets = {}
+        for slot = 1, CUSTOM_SLOTS do
+            local list = {}
+            local saved = cfg.custom_presets[slot]
+            if type(saved) == "table" then
+                for _, name in ipairs(saved) do
+                    if valid[name] then list[#list + 1] = name end
+                end
+            end
+            custom_presets[slot] = list
+        end
+    end
 end
 
 local function save_config()
     safe(function()
+        local sel = {}
+        for name, v in pairs(con_selected) do
+            if v then sel[name] = true end
+        end
         json.dump_file(CONFIG_FILE, {
             meal = sel_meal,
             slots = { slots[1] or -1, slots[2] or -1, slots[3] or -1, slots[4] or -1 },
             randoms_enabled = randoms_enabled,
             descriptions = descriptions_on,
+            consumables = sel,
+            prolonger_on = prolonger_on,
+            prolonger_level = prolonger_level,
+            panel = panel,
+            auto_on = auto_on,
+            auto_drinks = auto_drinks,
+            auto_preset = auto_preset,
+            custom_presets = custom_presets,
         })
     end)
 end
@@ -646,6 +787,179 @@ end
 
 local ACTIONS = { apply = apply_meal, clear = clear_meal }
 
+-- ---------------------------------------------------------------------------
+-- consumable buffs: apply / clear
+-- ---------------------------------------------------------------------------
+
+local function consumable_spec(name)
+    for _, spec in ipairs(CONSUMABLES) do
+        if spec.enum == name then return spec end
+    end
+    return nil
+end
+
+local function item_buff()
+    local st, src = local_status()
+    if not st then return nil, src end
+    local ib = field_value(st, "_ItemBuff")
+    if ib == nil then return nil, "no_item_buff" end
+    return ib, src, st
+end
+
+local function load_consumable_data()
+    local map = enum_names(ITEM_BUFF_ENUM)
+    if next(map) == nil then
+        con.error = "enum not found: " .. ITEM_BUFF_ENUM
+        return false, con.error
+    end
+    con.enum = {}
+    for value, name in pairs(map) do
+        con.enum[tostring(name)] = tonumber(value)
+    end
+    local rate = 1.0
+    local st = local_status()
+    if st then
+        local skill = field_value(st, "_Skill")
+        local r = skill and call_method(skill, "getSkillItemUsePowerUpTimeRate")
+        if type(r) == "number" and r > 0 then rate = r end
+    end
+    con.rate = rate
+    con.level = 0
+    for lv = 3, 0, -1 do
+        if math.abs(PROLONGER_RATE[lv] - rate) < 0.001 then
+            con.level = lv
+            break
+        end
+    end
+    con.ready = true
+    con.error = nil
+    return true
+end
+
+-- Time scale passed to the game: 1.0, or the Item Prolonger multiplier.
+local function con_scale()
+    if not prolonger_on then return 1.0 end
+    if prolonger_level ~= nil then return PROLONGER_RATE[prolonger_level] or 1.0 end
+    return con.rate or 1.0
+end
+
+local function consumable_timer(spec, ib)
+    if spec.struct then
+        local s = field_value(ib, spec.struct)
+        return s and field_value(s, "_Timer") or nil
+    end
+    return field_value(ib, spec.field)
+end
+
+local function active_consumables()
+    local ib = item_buff()
+    if not ib then return {} end
+    local out = {}
+    for _, spec in ipairs(CONSUMABLES) do
+        local t = tonumber(consumable_timer(spec, ib))
+        if t and t > 0 then
+            out[#out + 1] = { spec = spec, timer = t }
+        end
+    end
+    return out
+end
+
+local function apply_consumable(spec, ib)
+    local v = con.enum[spec.enum]
+    if v == nil then return false, "enum_missing" end
+    -- same-slot buffs replace each other instead of stacking
+    local group = CON_EXCLUSIVE[spec.enum]
+    if group then
+        for _, other in ipairs(CONSUMABLES) do
+            if other.enum ~= spec.enum and CON_EXCLUSIVE[other.enum] == group then
+                local ov = con.enum[other.enum]
+                if ov then
+                    call_void(ib, "deactivateItemBuff(app.HunterDef.ITEM_BUFF_TYPE)", ov)
+                end
+            end
+        end
+    end
+    return call_void(ib,
+        "activateItemBuff(app.HunterDef.ITEM_BUFF_TYPE, System.Single, System.Single)",
+        v, 1.0, con_scale())
+end
+
+local function apply_consumables(names, label)
+    if not con.ready then
+        local ok, err = load_consumable_data()
+        if not ok then lastStatus = "consumables: " .. tostring(err) return end
+    end
+    local ib, src = item_buff()
+    if not ib then lastStatus = "consumables refused: " .. tostring(src) return end
+    local applied, failed = {}, {}
+    for _, name in ipairs(names) do
+        local spec = consumable_spec(name)
+        if spec then
+            local ok, err = apply_consumable(spec, ib)
+            if ok then
+                applied[#applied + 1] = spec.label
+            else
+                failed[#failed + 1] = spec.label .. " (" .. tostring(err) .. ")"
+            end
+        end
+    end
+    local scale = con_scale()
+    lastStatus = string.format("%s: applied %d buff%s%s%s",
+        label or "consumables", #applied, #applied == 1 and "" or "s",
+        scale ~= 1.0 and string.format(" (Item Prolonger x%.2f)", scale) or "",
+        #failed > 0 and ("  failed: " .. table.concat(failed, ", ")) or "")
+    log.info("[MealBuffet] " .. lastStatus)
+end
+
+local function clear_consumables(names, label)
+    if not con.ready then
+        local ok, err = load_consumable_data()
+        if not ok then lastStatus = "consumables: " .. tostring(err) return end
+    end
+    local ib, src = item_buff()
+    if not ib then lastStatus = "clear refused: " .. tostring(src) return end
+    local n = 0
+    for _, name in ipairs(names) do
+        local spec = consumable_spec(name)
+        local v = spec and con.enum[spec.enum]
+        if v then
+            if call_void(ib, "deactivateItemBuff(app.HunterDef.ITEM_BUFF_TYPE)", v) then
+                n = n + 1
+            end
+        end
+    end
+    lastStatus = string.format("%s: cleared %d buff%s",
+        label or "consumables", n, n == 1 and "" or "s")
+    log.info("[MealBuffet] " .. lastStatus)
+end
+
+local function all_consumable_names()
+    local out = {}
+    for _, spec in ipairs(CONSUMABLES) do out[#out + 1] = spec.enum end
+    return out
+end
+
+local function selected_consumable_names()
+    local out = {}
+    for _, spec in ipairs(CONSUMABLES) do
+        if con_selected[spec.enum] then out[#out + 1] = spec.enum end
+    end
+    return out
+end
+
+local function request_con(names, clear, label)
+    if names == nil or #names == 0 then
+        lastStatus = "nothing selected"
+        return
+    end
+    if pending_con ~= nil or pending_action ~= nil then
+        lastStatus = "busy: " .. tostring(pending_con and "consumables" or pending_action)
+        return
+    end
+    pending_con = { names = names, clear = clear == true, label = label }
+end
+
+
 local function request_action(name)
     if ACTIONS[name] == nil then return end
     if pending_action ~= nil then
@@ -656,10 +970,225 @@ local function request_action(name)
 end
 
 -- ---------------------------------------------------------------------------
+-- auto-apply on quest start
+-- ---------------------------------------------------------------------------
+
+-- No hook: app.MissionManager.get_IsPlayingQuest() is polled a few times a
+-- second while a toggle is on. On the rising edge the chosen preset is
+-- applied; the Hot/Cool Drink pick is delayed up to 15 s so the area flags
+-- have time to resolve, and is applied at most once per quest.
+-- Resolve an enum value back to its field name (REFramework does not expose
+-- Enum.GetName, but the static fields carry the values).
+local function enum_name_for(typeName, value)
+    local td = safe(sdk.find_type_definition, typeName)
+    if td == nil or value == nil then return nil end
+    for _, f in ipairs(safe(function() return td:get_fields() end) or {}) do
+        if safe(function() return f:is_static() end) then
+            local v = safe(function() return f:get_data(nil) end)
+            if v ~= nil and v == value then
+                return safe(function() return f:get_name() end)
+            end
+        end
+    end
+    return nil
+end
+
+-- Resolve a getter's value against the enum type the method itself declares
+-- as its return type (guessing type names picked the wrong enum before).
+local function method_enum(obj, methodName)
+    local td = safe(function() return obj:get_type_definition() end)
+    if td == nil then return nil end
+    local m = safe(function() return td:get_method(methodName .. "()") end)
+        or safe(function() return td:get_method(methodName) end)
+    if m == nil then return nil end
+    local v = safe(function() return m:call(obj) end)
+    if v == nil then return nil end
+    local rt = safe(function() return m:get_return_type() end)
+    local rt_name = rt and safe(function() return rt:get_full_name() end)
+    local name = rt_name and enum_name_for(rt_name, v) or nil
+    return v, name, rt_name
+end
+
+-- The hunter's own life area is the map (or map base camp) the player is in:
+-- it is set in the open world as well as in a quest. Values are the game's
+-- app.FieldDef.LIFE_AREA codes (ST101_BC, ST103_VLG, ...).
+local function life_area_code()
+    local ch = local_character()
+    if ch == nil then return nil end
+    local comp = call_method(ch, "get_LifeArea")
+    if comp == nil then return nil end
+    local names = enum_names("app.FieldDef.LIFE_AREA")
+    if next(names) == nil then return nil end
+    local function resolve(value)
+        if value == nil then return nil end
+        local n = names[tostring(value)]
+        if n and n:find("^ST") then return n end
+        return nil
+    end
+    local code = resolve(call_method(comp, "get_LifeArea")) or resolve(field_value(comp, "_LifeArea"))
+    if code then return code end
+    local td = safe(function() return comp:get_type_definition() end)
+    for _, f in ipairs(safe(function() return td and td:get_fields() end) or {}) do
+        if safe(function() return f:is_static() end) ~= true then
+            code = resolve(safe(function() return f:get_data(comp) end))
+            if code then return code end
+        end
+    end
+    return nil
+end
+
+-- Hot map -> Cool Drink, cold map -> Hot Drink. Keyed by the stage prefix of
+-- the life-area code so both the field camp and the village variants match.
+-- Locale id -> drink. Prefix match, so ST103_BC / ST103_VLG / ST103 all hit.
+-- Special quest locales (ST4xx) can be listed next to the open maps.
+local STAGE_DRINK = {
+    ST103 = "COOLER_DRINK", -- Oilwell Basin
+    ST104 = "HOT_DRINK",    -- Iceshard Cliffs
+    ST402 = "HOT_DRINK",    -- Omega Planetes arena
+}
+
+local function stage_drink(name)
+    if name == nil then return nil end
+    local n = string.upper(tostring(name)):gsub("[^A-Z0-9]", "")
+    for code, drink in pairs(STAGE_DRINK) do
+        if n:find(code) then return drink end
+    end
+    return nil
+end
+
+-- The quest supplies a stage/environment too; used when the life-area code is
+-- not one of the known maps yet.
+local function quest_map()
+    local mm = safe(function() return sdk.get_managed_singleton("app.MissionManager") end)
+    local aqd = mm and call_method(mm, "get_ActiveQuestData")
+    if aqd == nil then return nil end
+    local stage_v, stage_name, stage_type = method_enum(aqd, "getStage")
+    local env_v, env_name, env_type = method_enum(aqd, "getEnvironmentType")
+    if stage_v == nil and env_v == nil then return nil end
+    return {
+        stage = stage_name, stage_value = stage_v, stage_type = stage_type,
+        env = env_name, env_value = env_v, env_type = env_type,
+    }
+end
+
+local function map_drink_name(name)
+    if name == nil then return nil end
+    local known = stage_drink(name)
+    if known then return known end
+    -- tolerant match: drop spaces/underscores ("ST 103", "ST103_BC")
+    local n = string.upper(tostring(name)):gsub("[^A-Z0-9]", "")
+    if n:find("OILWELL") or n:find("LAVA") or n:find("VOLCAN")
+        or n:find("HOT") or n:find("HEAT") or n:find("SCORCH") then
+        return "COOLER_DRINK"
+    end
+    if n:find("ICE") or n:find("SNOW") or n:find("COLD") or n:find("FREEZ") then
+        return "HOT_DRINK"
+    end
+    return nil
+end
+
+-- Fallback: the character's own area flags (used when the map is unknown).
+local function area_drink()
+    local ch = local_character()
+    if ch == nil then return nil end
+    if call_method(ch, "get_IsInHotArea") == true then return "COOLER_DRINK" end
+    if call_method(ch, "get_IsInColdArea") == true then return "HOT_DRINK" end
+    return nil
+end
+
+-- Which drink the current map wants, and a short source label for the status.
+local function current_drink()
+    local info = quest_map()
+    local code = life_area_code()
+    -- The quest's stage is the locale id (ST1xx); it is the most direct map
+    -- signal while a quest is running.
+    local want = info and map_drink_name(info.stage)
+    if want then return want, tostring(info.stage) .. " " .. tostring(info.stage_value) end
+    want = stage_drink(code)
+    if want then return want, code end
+    want = info and map_drink_name(info.env)
+    if want then return want, tostring(info.env) end
+    want = area_drink()
+    if want then return want, code or "area" end
+    return nil, code
+end
+
+local function try_auto_drink()
+    if not auto_drinks or auto_drink_done then return end
+    auto_start_frames = auto_start_frames + 30
+    if auto_start_frames > 900 then -- 15 s: stop looking, no drink this quest
+        auto_drink_done = true
+        return
+    end
+    local want, source = current_drink()
+    if want == nil then return end
+    local spec = consumable_spec(want)
+    if spec == nil then
+        auto_drink_done = true
+        return
+    end
+    local ib = item_buff()
+    if ib == nil then return end
+    if pending_con ~= nil or pending_action ~= nil then return end
+    auto_drink_done = true
+    pending_con = {
+        names = { want }, clear = false,
+        label = source and ("auto " .. spec.label .. " [" .. tostring(source) .. "]")
+            or ("auto " .. spec.label),
+    }
+end
+
+local function poll_auto_quest()
+    local mm = safe(function() return sdk.get_managed_singleton("app.MissionManager") end)
+    if mm == nil then return end
+    local in_quest = call_method(mm, "get_IsPlayingQuest")
+    if in_quest == nil then in_quest = call_method(mm, "get_IsActiveQuest") end
+    if in_quest ~= true then
+        auto_in_quest = false
+        auto_drink_done = false
+        auto_start_frames = 0
+        return
+    end
+    if auto_in_quest then
+        try_auto_drink()
+        return
+    end
+    if item_buff() == nil then return end -- hunter not ready yet: retry next poll
+    auto_in_quest = true
+    auto_drink_done = false
+    auto_start_frames = 0
+    if auto_on and pending_con == nil and pending_action == nil then
+        local name, buffs = preset_at(auto_preset)
+        if buffs ~= nil and #buffs > 0 then
+            pending_con = { names = buffs, clear = false, label = "auto " .. name }
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- frame callback: runs a queued action, then one verification read
 -- ---------------------------------------------------------------------------
 
 local function on_frame()
+    auto_tick = auto_tick + 1
+    if (auto_on or auto_drinks) and (auto_tick % 30) == 0 then
+        if not con.ready then load_consumable_data() end
+        local ok, err = pcall(poll_auto_quest)
+        if not ok then log.warn("[MealBuffet] auto: " .. tostring(err)) end
+    end
+    if pending_con ~= nil then
+        local job = pending_con
+        pending_con = nil
+        local ok, err = pcall(function()
+            if job.clear then
+                clear_consumables(job.names, job.label)
+            else
+                apply_consumables(job.names, job.label)
+            end
+        end)
+        if not ok then lastStatus = "error (consumables): " .. tostring(err) end
+        return
+    end
     if pending_action ~= nil then
         local name = pending_action
         pending_action = nil
@@ -696,15 +1225,17 @@ local function slot_label(meal, slot_index)
     return "game roll"
 end
 
-local function draw_ui()
-    if not imgui.tree_node("Meal Buffet v" .. VERSION) then return end
+local function fmt_duration(sec)
+    sec = math.max(0, math.floor(tonumber(sec) or 0))
+    return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+end
 
+local function draw_meal_section()
     if not data.ready then
         local ok, err = load_data()
         if not ok then
             imgui.text("meal data not available: " .. tostring(err))
             imgui.text("enter a save (hub or camp), then reopen this panel")
-            imgui.tree_pop()
             return
         end
     end
@@ -726,7 +1257,6 @@ local function draw_ui()
     local meal = selected_meal()
     if meal == nil then
         imgui.text("no meal data")
-        imgui.tree_pop()
         return
     end
 
@@ -801,12 +1331,202 @@ local function draw_ui()
     end
 
     imgui.separator()
-    imgui.text("status: " .. tostring(lastStatus))
-    imgui.separator()
     imgui.text("no voucher, no ingredients: the meal state is applied directly.")
     imgui.text("works in the hub, at camp, and during a quest.")
+end
+
+local function draw_consumables_section()
+    if not con.ready then load_consumable_data() end
+    if not con.ready then
+        imgui.text("consumable data not available: " .. tostring(con.error))
+        imgui.text("enter a save (hub or camp), then reopen this panel")
+        return
+    end
+
+    local active = active_consumables()
+    if #active > 0 then
+        imgui.text("active item buffs:")
+        for _, rec in ipairs(active) do
+            imgui.text(string.format("   %-20s %s", rec.spec.label, fmt_duration(rec.timer)))
+        end
+    else
+        imgui.text("active item buffs: (none)")
+    end
+    imgui.separator()
+
+    imgui.text("presets:")
+    if imgui.button("Standard") then request_con(STANDARD_PRESET, false, "Standard") end
+    imgui.same_line()
+    if imgui.button("Clear all buffs") then request_con(all_consumable_names(), true) end
+
+    for slot = 1, CUSTOM_SLOTS do
+        local list = custom_presets[slot] or {}
+        imgui.text(string.format("Set %d (%d buff%s)", slot, #list, #list == 1 and "" or "s"))
+        imgui.same_line()
+        if imgui.button("Apply##ps" .. slot) then
+            request_con(list, false, "Set " .. slot)
+        end
+        imgui.same_line()
+        if imgui.button("Save selection##ps" .. slot) then
+            local names = selected_consumable_names()
+            if #names == 0 then
+                lastStatus = "tick the buffs first, then save"
+            else
+                custom_presets[slot] = names
+                save_config()
+                lastStatus = string.format("saved %d buff%s to set %d",
+                    #names, #names == 1 and "" or "s", slot)
+            end
+        end
+        imgui.same_line()
+        if imgui.button("Clear##ps" .. slot) then
+            custom_presets[slot] = {}
+            save_config()
+            lastStatus = "cleared set " .. slot
+        end
+    end
+    imgui.separator()
+
+    if imgui.button(auto_on and "Auto preset on quest start: on" or "Auto preset on quest start: off") then
+        auto_on = not auto_on
+        auto_in_quest = false
+        save_config()
+    end
+    imgui.same_line()
+    local auto_name, auto_buffs = preset_at(auto_preset)
+    imgui.text(string.format("preset %s%s", auto_name,
+        (auto_buffs == nil or #auto_buffs == 0) and " (empty)" or ""))
+    imgui.same_line()
+    if imgui.button("<##ap") then
+        auto_preset = ((auto_preset - 2) % preset_count()) + 1
+        save_config()
+    end
+    imgui.same_line()
+    if imgui.button(">##ap") then
+        auto_preset = (auto_preset % preset_count()) + 1
+        save_config()
+    end
+
+    if imgui.button(auto_drinks and "Auto Hot/Cool Drink on quest start: on"
+        or "Auto Hot/Cool Drink on quest start: off") then
+        auto_drinks = not auto_drinks
+        save_config()
+    end
+    imgui.same_line()
+    local info_now = quest_map()
+    if info_now and info_now.stage then
+        imgui.text(string.format("stage: %s [%s]", tostring(info_now.stage),
+            tostring(info_now.stage_value)))
+        imgui.same_line()
+    end
+    imgui.text("area: " .. tostring(life_area_code() or "-"))
+    imgui.separator()
+
+    -- Item Prolonger (Enduring Jewel): scales the buff's own base duration.
+    local changed, value = imgui.checkbox("Item Prolonger", prolonger_on)
+    if changed then prolonger_on = value save_config() end
+    imgui.same_line()
+    if prolonger_level == nil then
+        imgui.text(string.format("auto: Lv%d  x%.2f", con.level, con.rate))
+    else
+        imgui.text(string.format("manual: Lv%d  x%.2f", prolonger_level,
+            PROLONGER_RATE[prolonger_level] or 1.0))
+    end
+    imgui.same_line()
+    if imgui.button("<##plv") then
+        local lv = prolonger_level or con.level
+        prolonger_level = (lv + 3) % 4
+        save_config()
+    end
+    imgui.same_line()
+    if imgui.button(">##plv") then
+        local lv = prolonger_level or con.level
+        prolonger_level = (lv + 1) % 4
+        save_config()
+    end
+    imgui.same_line()
+    if imgui.button("auto##plv") then
+        prolonger_level = nil
+        save_config()
+    end
+
+    local scale = con_scale()
+    local ib = item_buff()
+    imgui.separator()
+    for _, group in ipairs(CON_GROUPS) do
+        imgui.text(group)
+        for _, spec in ipairs(CONSUMABLES) do
+            if spec.group == group then
+                local sel, checked = imgui.checkbox("##sel" .. spec.enum,
+                    con_selected[spec.enum] == true)
+                if sel then
+                    con_selected[spec.enum] = checked or nil
+                    save_config()
+                end
+                imgui.same_line()
+                imgui.text(string.format("%s  -  %s  -  %s",
+                    spec.label, spec.effect, fmt_duration(spec.secs * scale)))
+                imgui.same_line()
+                if imgui.button("Apply##ap" .. spec.enum) then
+                    request_con({ spec.enum }, false)
+                end
+                local t = ib and tonumber(consumable_timer(spec, ib)) or nil
+                if t and t > 0 then
+                    imgui.same_line()
+                    imgui.text("left " .. fmt_duration(t))
+                    imgui.same_line()
+                    if imgui.button("Clear##cl" .. spec.enum) then
+                        request_con({ spec.enum }, true)
+                    end
+                end
+            end
+        end
+    end
+
+    imgui.separator()
+    local selected = selected_consumable_names()
+    if imgui.button(string.format("Apply selected (%d)", #selected)) then
+        request_con(selected, false)
+    end
+    imgui.same_line()
+    if imgui.button("Clear selected") then request_con(selected, true) end
+    imgui.same_line()
+    if imgui.button("Refresh") then
+        con.ready = false
+        local ok, err = load_consumable_data()
+        lastStatus = ok and "consumable data refreshed" or ("refresh failed: " .. tostring(err))
+    end
+
+    imgui.separator()
+    imgui.text("no item is consumed; nothing has to be in your pouch.")
+    imgui.text("duration comes from the game; Item Prolonger adds its bonus when on.")
+end
+
+local function draw_ui()
+    if not imgui.tree_node("Meal Buffet v" .. VERSION) then return end
+
+    if imgui.button(panel == "meals" and "[ Meals ]" or "Meals") then
+        panel = "meals"
+        save_config()
+    end
+    imgui.same_line()
+    if imgui.button(panel == "consumables" and "[ Consumables ]" or "Consumables") then
+        panel = "consumables"
+        save_config()
+    end
+    imgui.separator()
+
+    if panel == "consumables" then
+        draw_consumables_section()
+    else
+        draw_meal_section()
+    end
+
+    imgui.separator()
+    imgui.text("status: " .. tostring(lastStatus))
     imgui.tree_pop()
 end
+
 
 -- ---------------------------------------------------------------------------
 

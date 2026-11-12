@@ -1,10 +1,9 @@
 Meal Buffet — REFramework mod for Monster Hunter Wilds
 ====================================================
 
-Applies any canteen meal to YOUR hunter on demand, without walking to the
-canteen and without spending a Meal Voucher. Pick one of the game's meal sets,
-choose or reroll the two extra buffs, then press Apply. Works in the hub, at
-camp, and during a quest.
+Applies any canteen meal, and any consumable buff, to YOUR hunter on demand,
+without walking to the canteen and without spending a Meal Voucher, ingredients
+or items. Works in the hub, at camp, and during a quest.
 
 This mod replaces Meal Stripper: the Clear meal button is the same one-click
 meal strip, and applying a new meal replaces the active one directly, so you
@@ -39,26 +38,42 @@ USAGE
 -----
   1. Press Insert to open the REFramework menu.
   2. Script Generated UI -> Meal Buffet.
-  3. < Prev / Next > pick a meal set. Its base stats and fixed skills are
-     listed.
-  4. For each extra buff slot, < / > cycles: game roll -> none -> a specific
-     buff. Each picked buff shows a short description.
-  5. Press "Apply meal". The active skills list at the top shows what landed.
-  6. Press "Clear meal" to remove the active meal (this is the Meal Stripper
-     strip).
-  - Works outside a quest (hub, camp) and during a quest.
-  - No Meal Voucher and no ingredients are consumed.
+  3. Pick Meals or Consumables at the top of the panel.
+
+  Meals:
+  - < Prev / Next > pick a meal set. Its base stats and fixed skills are
+    listed.
+  - For each extra buff slot, < / > cycles: game roll -> none -> a specific
+    buff. Each picked buff shows a short description.
+  - Press "Apply meal". The active skills list at the top shows what landed.
+  - Press "Clear meal" to remove the active meal (this is the Meal Stripper
+    strip).
+
+  Consumables:
+  - Drugs, seeds, pills, powders and drinks. Tick what you want and press
+    "Apply selected", or press "Apply" on a single row.
+  - "Standard" applies a built-in set. "Save selection" stores your ticks in
+    one of the four unnamed slots; "Apply" on a slot applies it later.
+  - "Item Prolonger" toggles the duration bonus; < > overrides the level.
+  - "Auto preset on quest start" applies the selected preset once per quest.
+  - "Auto Hot/Cool Drink on quest start" applies one drink based on the
+    quest locale: ST103 Oilwell Basin -> Cool Drink, ST104 Iceshard Cliffs ->
+    Hot Drink, ST402 Omega Planetes -> Hot Drink.
+  - Nothing is consumed and nothing has to be in your pouch.
 
 NOTES
 -----
-- Meals, fixed skills and the extra-buff pool come from game master data at
-  runtime, so a title update that adds meals shows up without a mod update.
-- Applying a meal replaces whatever meal is already active.
-- The selection (meal + buffs) is saved to reframework/data/meal_buffet.json.
+- Meals, fixed skills, buff durations and item buffs come from the game at
+  runtime, so a title update shows up without a mod update.
+- Applying a meal replaces whatever meal is already active. Drugs share a slot
+  with their mega version, and a seed shares a slot with its pill.
+- Selections, the four preset slots and both auto toggles are saved to
+  reframework/data/meal_buffet.json.
 - If a game patch renames an internal field or method, the panel reports the
   failing call instead of throwing.
 - Reload the script any time: REFramework menu -> "Script" -> "Reset scripts".
-- No hooks, no per-frame work: writes happen only when you press Apply/Clear.
+- No hooks: the auto toggles poll the quest state a few times a second, and
+  writes happen only on Apply/Clear or when a toggle fires.
 
 CREDITS
 -------

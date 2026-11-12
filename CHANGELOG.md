@@ -1,9 +1,27 @@
 # Changelog
 
+## 0.2.0 — 2026-11-11
+- **Consumables panel**: apply any buff item from the REFramework menu — drugs,
+  seeds, pills, powders and drinks. Uses the game's own
+  `activateItemBuff(type, effectRate, timeScale)`; no item is consumed and
+  nothing has to be in the pouch.
+- Per-buff Apply/Clear, `Apply selected`, and `Clear all`.
+- **Presets**: built-in Standard set plus four unnamed slots (`Save selection`).
+- **Item Prolonger (Enduring Jewel)**: multiplier read from the hunter
+  (`getSkillItemUsePowerUpTimeRate`), on/off toggle and Lv0–3 override.
+- **Auto preset on quest start**: one-shot application of a chosen preset,
+  detected by polling `app.MissionManager.get_IsPlayingQuest()` (no hooks).
+- **Auto Hot/Cool Drink on quest start**: one drink per quest based on the
+  locale — ST103 Oilwell Basin → Cool Drink, ST104 Iceshard Cliffs → Hot Drink,
+  ST402 Omega Planetes → Hot Drink.
+- Panel split into **Meals** and **Consumables** sections; both states persist
+  in `reframework/data/meal_buffet.json`.
+- Slot rules: drug ↔ mega drug and seed ↔ pill replace each other.
+
 ## 0.1.1 — 2026-11-10
 - Show a short description for every active or picked meal skill.
-- Verified in the hub, at camp and during a quest.
 - `Descriptions: on/off` toggle to keep the panel compact (saved in the config).
+- Verified in the hub, at camp and during a quest.
 
 ## 0.1.0 — 2026-11-10
 - First release.

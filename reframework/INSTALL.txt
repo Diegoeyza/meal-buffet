@@ -1,22 +1,38 @@
 Meal Buffet — REFramework mod for Monster Hunter Wilds
 ====================================================
 
-Status: v0.1.1. Verified in the hub, at camp and during a quest.
+Status: v0.2.0. Meals and consumables verified in the hub and in quests.
 
 What it does
 ------------
-Applies any canteen meal to your own hunter on demand, without going to the
-canteen and without spending a Meal Voucher or ingredients. Pick a meal set,
-choose or reroll its two extra buffs, press Apply.
+Applies any canteen meal, and any consumable buff, to your own hunter on demand
+without going to the canteen and without spending a Meal Voucher, ingredients
+or items.
 
-Clear meal removes the active meal (the Meal Stripper behaviour), and applying
-a new meal replaces the active one directly, so you never need to strip first.
+Meals: pick a meal set, choose or reroll its two extra buffs, press Apply.
+Clear meal removes the active meal (the Meal Stripper behaviour), and applying a
+new meal replaces the active one directly, so you never need to strip first.
 
-Meals, fixed skills and the buff pool come from the game's master data at
-runtime, nothing is hardcoded.
+Consumables: drugs, seeds, pills, powders and drinks (Demondrug, Armorskin,
+Might/Adamant Seed, Might/Adamant Pill, Demon/Hardshell Powder, Dash Juice,
+Immunizer, Hot Drink, Cool Drink). Tick the ones you want and press Apply
+selected, use the Standard preset, or save your own sets in the four slots.
+Nothing is consumed and nothing has to be in your pouch. Item Prolonger can be
+toggled on/off and overridden by level.
 
-It writes meal state on your local hunter only: never other players, never save
-data, no game files modified, no network.
+Auto toggles (one shot per quest):
+- Auto preset on quest start: applies the selected preset when a quest begins.
+- Auto Hot/Cool Drink on quest start: one drink chosen from the locale.
+    ST103 Oilwell Basin      -> Cool Drink
+    ST104 Iceshard Cliffs    -> Hot Drink
+    ST402 Omega Planetes     -> Hot Drink
+    anything else            -> no drink
+
+Meals, fixed skills, buff durations and item buffs come from the game itself at
+runtime, nothing is hardcoded except the locale-to-drink table.
+
+It writes state on your local hunter only: never other players, never save data,
+no game files modified, no network.
 
 Install
 -------
@@ -31,19 +47,30 @@ Install
 Use
 ---
 1. Press Insert -> Script Generated UI -> Meal Buffet.
-2. < Prev / Next > pick a meal set (base stats and fixed skills are listed).
-3. For each extra buff slot, < / > cycles game roll -> none -> a specific
-   buff. Picked buffs show a short description.
-4. Press "Apply meal"; the active skills list shows what landed.
-5. Press "Clear meal" to remove the active meal.
+2. Choose Meals or Consumables at the top of the panel.
+
+Meals:
+   - < Prev / Next > pick a meal set (base stats and fixed skills are listed).
+   - For each extra buff slot, < / > cycles game roll -> none -> a specific
+     buff. Picked buffs show a short description.
+   - Press "Apply meal"; the active skills list shows what landed.
+   - Press "Clear meal" to remove the active meal.
+
+Consumables:
+   - Tick buffs, then "Apply selected", or press "Apply" on a single row.
+   - "Standard" applies the built-in set; "Save selection" stores your ticks in
+     one of the four unnamed slots.
+   - "Item Prolonger" toggles the duration bonus; < > overrides the level.
+   - The auto toggles apply a preset or the map's Hot/Cool Drink at quest start.
 
 Works in the hub, at camp, and during a quest.
 
 Notes
 -----
-- No voucher and no ingredients are consumed.
-- The selection is saved to reframework/data/meal_buffet.json.
-- No hooks and no per-frame work; writes only when you press Apply or Clear.
+- No voucher, no ingredients and no items are consumed.
+- Selections, presets and toggles live in reframework/data/meal_buffet.json.
+- No hooks; the auto toggles poll the quest state a few times a second.
+- Writes happen only when you press an Apply/Clear button or a toggle fires.
 - Reload via REFramework menu -> "Script" -> "Reset scripts".
 - If a game patch renames an internal field or method, the panel reports the
   failing call instead of throwing.

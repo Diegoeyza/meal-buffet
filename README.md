@@ -126,8 +126,8 @@ Consumables:
    buffs into one of the four slots.
 3. **Item Prolonger** toggles the duration bonus; `<` `>` override the level.
 4. **Auto preset on quest start** / **Auto Hot/Cool Drink on quest start** are
-   one-shot per quest. The panel shows the current `stage`/`area` values so the
-   drink decision is visible.
+   one-shot per quest. The panel shows the current quest `stage` so the drink
+   decision is visible.
 
 Reload the script any time: REFramework menu → Script → **Reset scripts**.
 

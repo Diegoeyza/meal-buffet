@@ -1009,36 +1009,6 @@ local function method_enum(obj, methodName)
     return v, name, rt_name
 end
 
--- The hunter's own life area is the map (or map base camp) the player is in:
--- it is set in the open world as well as in a quest. Values are the game's
--- app.FieldDef.LIFE_AREA codes (ST101_BC, ST103_VLG, ...).
-local function life_area_code()
-    local ch = local_character()
-    if ch == nil then return nil end
-    local comp = call_method(ch, "get_LifeArea")
-    if comp == nil then return nil end
-    local names = enum_names("app.FieldDef.LIFE_AREA")
-    if next(names) == nil then return nil end
-    local function resolve(value)
-        if value == nil then return nil end
-        local n = names[tostring(value)]
-        if n and n:find("^ST") then return n end
-        return nil
-    end
-    local code = resolve(call_method(comp, "get_LifeArea")) or resolve(field_value(comp, "_LifeArea"))
-    if code then return code end
-    local td = safe(function() return comp:get_type_definition() end)
-    for _, f in ipairs(safe(function() return td and td:get_fields() end) or {}) do
-        if safe(function() return f:is_static() end) ~= true then
-            code = resolve(safe(function() return f:get_data(comp) end))
-            if code then return code end
-        end
-    end
-    return nil
-end
-
--- Hot map -> Cool Drink, cold map -> Hot Drink. Keyed by the stage prefix of
--- the life-area code so both the field camp and the village variants match.
 -- Locale id -> drink. Prefix match, so ST103_BC / ST103_VLG / ST103 all hit.
 -- Special quest locales (ST4xx) can be listed next to the open maps.
 local STAGE_DRINK = {
@@ -1099,18 +1069,14 @@ end
 -- Which drink the current map wants, and a short source label for the status.
 local function current_drink()
     local info = quest_map()
-    local code = life_area_code()
-    -- The quest's stage is the locale id (ST1xx); it is the most direct map
-    -- signal while a quest is running.
+    -- The quest's stage is the locale id (ST1xx): the map signal.
     local want = info and map_drink_name(info.stage)
     if want then return want, tostring(info.stage) .. " " .. tostring(info.stage_value) end
-    want = stage_drink(code)
-    if want then return want, code end
     want = info and map_drink_name(info.env)
     if want then return want, tostring(info.env) end
     want = area_drink()
-    if want then return want, code or "area" end
-    return nil, code
+    if want then return want, "area" end
+    return nil
 end
 
 local function try_auto_drink()
@@ -1417,9 +1383,7 @@ local function draw_consumables_section()
     if info_now and info_now.stage then
         imgui.text(string.format("stage: %s [%s]", tostring(info_now.stage),
             tostring(info_now.stage_value)))
-        imgui.same_line()
     end
-    imgui.text("area: " .. tostring(life_area_code() or "-"))
     imgui.separator()
 
     -- Item Prolonger (Enduring Jewel): scales the buff's own base duration.

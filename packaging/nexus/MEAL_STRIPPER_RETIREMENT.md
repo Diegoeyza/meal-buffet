@@ -16,7 +16,7 @@ Applying a new meal also replaces the active one directly, so you no longer need
 
 Remove this mod before installing Meal Buffet.
 
-[url=https://github.com/Diegoeyza/meal-buffet]Source and downloads: Meal Buffet[/url]
+[url=https://www.nexusmods.com/monsterhunterwilds/mods/5321]Meal Buffet on Nexus[/url] | [url=https://github.com/Diegoeyza/meal-buffet]source[/url]
 ```
 
 Short description replacement:

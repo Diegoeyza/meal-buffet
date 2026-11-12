@@ -1,5 +1,7 @@
 # Nexus page — Meal Buffet v0.2.0
 
+**Live:** https://www.nexusmods.com/monsterhunterwilds/mods/5321
+
 Upload `dist/MealBuffet-0.2.0.zip` as the main file (Vortex-ready layout).
 
 The Nexus description field uses **BBCode** (not Markdown). Paste the blocks

@@ -4,7 +4,9 @@
 > quest. Consumable buffs, the user presets and the auto-apply toggles are
 > verified in game as well.
 
-**A REFramework mod for Monster Hunter Wilds.** Applies any canteen meal, and
+**A REFramework mod for Monster Hunter Wilds.** [Nexus page](https://www.nexusmods.com/monsterhunterwilds/mods/5321) · [Releases](https://github.com/Diegoeyza/meal-buffet/releases)
+
+Applies any canteen meal, and
 any consumable buff (drugs, seeds, pills, powders, drinks), to your own hunter
 on demand from the REFramework menu — no canteen trip, no item used, no voucher.
 

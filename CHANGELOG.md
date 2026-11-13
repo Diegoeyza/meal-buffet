@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — 2026-11-13
+- **Auto refresh outside quest** (Meals panel): while in the hub or at a camp,
+  re-applies the meal you last applied when it expires or has under a minute
+  left. Chosen by polling `app.MissionManager.get_IsPlayingQuest()`; paused
+  after *Clear meal* until you apply again.
+- Remembers the last applied meal by menu enum, so refreshing keeps the meal you
+  actually ate rather than the one currently previewed in the picker.
+
 ## 0.2.0 — 2026-11-11
 - **Consumables panel**: apply any buff item from the REFramework menu — drugs,
   seeds, pills, powders and drinks. Uses the game's own

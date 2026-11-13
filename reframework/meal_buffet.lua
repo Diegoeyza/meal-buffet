@@ -1,5 +1,5 @@
 --
--- meal_buffet.lua v0.2.0 — apply any canteen meal or consumable buff to your
+-- meal_buffet.lua v0.3.0 — apply any canteen meal or consumable buff to your
 -- hunter on demand
 --
 -- What it does:
@@ -16,6 +16,8 @@
 --       then the timer/flags a real eat leaves behind
 --         _DurationTimer = _TimerMax = minutes * 60, both active flags true
 --   * shows the meal that is currently on the hunter, with its skill names.
+--   * can refresh the last applied meal while outside a quest (hub/camp), after
+--     it expires or has under a minute left.
 --   * consumables: activates the game's own item buffs (drugs, seeds, pills,
 --     powders, drinks) with
 --       app.cHunterItemBuff:activateItemBuff(type, 1.0, timeScale)
@@ -41,7 +43,7 @@ local log = log
 local imgui = imgui
 local unpack = unpack or table.unpack
 
-local VERSION = "0.2.0"
+local VERSION = "0.3.0"
 local CONFIG_FILE = "meal_buffet.json"
 
 local ALREADY_LOADED = _G.MEAL_BUFFET_LOADED == true
@@ -156,6 +158,13 @@ local auto_tick = 0
 local auto_in_quest = false
 local auto_drink_done = false   -- one drink per quest
 local auto_start_frames = 0     -- frames since the quest started
+local auto_meal_refresh = false -- re-apply the meal while outside a quest
+local auto_meal_cooldown = 0    -- frames; avoids retry storms if apply fails
+local meal_cleared = false      -- user pressed Clear meal: do not fight it
+local last_meal_menu = nil      -- menu enum of the last applied meal
+
+-- Refresh the meal when this many seconds (or less) are left on its timer.
+local MEAL_REFRESH_BELOW = 60
 
 
 -- ---------------------------------------------------------------------------
@@ -549,6 +558,16 @@ local function selected_meal()
     return data.meals[sel_meal]
 end
 
+-- The last meal that was applied, by its menu enum, so auto refresh keeps the
+-- meal you actually ate instead of whatever the picker is previewing.
+local function meal_by_menu(name)
+    if name == nil then return nil end
+    for _, meal in ipairs(data.meals) do
+        if meal.menu_enum == name then return meal end
+    end
+    return nil
+end
+
 -- Buffs available to this meal: the union of the pools its random tables name.
 local function meal_pool(meal)
     local out, seen = {}, {}
@@ -589,6 +608,8 @@ local function load_config()
     if cfg.panel == "consumables" or cfg.panel == "meals" then panel = cfg.panel end
     if type(cfg.auto_on) == "boolean" then auto_on = cfg.auto_on end
     if type(cfg.auto_drinks) == "boolean" then auto_drinks = cfg.auto_drinks end
+    if type(cfg.auto_meal_refresh) == "boolean" then auto_meal_refresh = cfg.auto_meal_refresh end
+    if type(cfg.last_meal_menu) == "string" then last_meal_menu = cfg.last_meal_menu end
     if type(cfg.auto_preset) == "number" then
         local idx = math.floor(cfg.auto_preset)
         if idx >= 1 and idx <= preset_count() then auto_preset = idx end
@@ -633,6 +654,8 @@ local function save_config()
             panel = panel,
             auto_on = auto_on,
             auto_drinks = auto_drinks,
+            auto_meal_refresh = auto_meal_refresh,
+            last_meal_menu = last_meal_menu,
             auto_preset = auto_preset,
             custom_presets = custom_presets,
         })
@@ -682,12 +705,12 @@ end
 -- apply / clear
 -- ---------------------------------------------------------------------------
 
-local function apply_meal()
+local function apply_meal(menu)
     if not data.ready then
         local ok, err = load_data()
         if not ok then lastStatus = "apply: " .. tostring(err) return end
     end
-    local meal = selected_meal()
+    local meal = meal_by_menu(menu) or selected_meal()
     if meal == nil then lastStatus = "apply: no meal data" return end
 
     local hunter, src = meal_object()
@@ -759,6 +782,8 @@ local function apply_meal()
     write_field(hunter, MEAL_TYPE, "_IsEffectActive", true)
 
     verify_pending = { frames = 15, count = 0 }
+    last_meal_menu = meal.menu_enum
+    meal_cleared = false
     save_config()
 
     local names = {}
@@ -781,11 +806,16 @@ local function clear_meal()
             if ok then n = n + 1 end
         end
     end
+    if n > 0 then meal_cleared = true end
     lastStatus = string.format("cleared %d/%d meal fields", n, #STRIP_FIELDS)
     log.info("[MealBuffet] " .. lastStatus)
 end
 
-local ACTIONS = { apply = apply_meal, clear = clear_meal }
+local function apply_last_meal()
+    apply_meal(last_meal_menu)
+end
+
+local ACTIONS = { apply = apply_meal, apply_last = apply_last_meal, clear = clear_meal }
 
 -- ---------------------------------------------------------------------------
 -- consumable buffs: apply / clear
@@ -1104,11 +1134,28 @@ local function try_auto_drink()
     }
 end
 
+-- Outside a quest only: re-apply the last meal when it expired or is about to.
+local function try_auto_meal(in_quest)
+    if not auto_meal_refresh or meal_cleared then return end
+    if in_quest ~= false then return end -- nil = unknown (loading), skip too
+    if auto_meal_cooldown > 0 then return end
+    if pending_action ~= nil or pending_con ~= nil then return end
+    local meal = meal_object()
+    if meal == nil then return end
+    local active = field_value(meal, "_IsEffectActive") == true
+    local timer = tonumber(field_value(meal, "_DurationTimer")) or 0
+    if active and timer > MEAL_REFRESH_BELOW then return end
+    auto_meal_cooldown = 120 -- 2 s at 60 fps; enough to survive a failed apply
+    pending_action = "apply_last"
+end
+
 local function poll_auto_quest()
     local mm = safe(function() return sdk.get_managed_singleton("app.MissionManager") end)
     if mm == nil then return end
     local in_quest = call_method(mm, "get_IsPlayingQuest")
     if in_quest == nil then in_quest = call_method(mm, "get_IsActiveQuest") end
+    local ok_meal, err_meal = pcall(try_auto_meal, in_quest)
+    if not ok_meal then log.warn("[MealBuffet] auto meal: " .. tostring(err_meal)) end
     if in_quest ~= true then
         auto_in_quest = false
         auto_drink_done = false
@@ -1137,8 +1184,9 @@ end
 
 local function on_frame()
     auto_tick = auto_tick + 1
-    if (auto_on or auto_drinks) and (auto_tick % 30) == 0 then
-        if not con.ready then load_consumable_data() end
+    if auto_meal_cooldown > 0 then auto_meal_cooldown = auto_meal_cooldown - 1 end
+    if (auto_on or auto_drinks or auto_meal_refresh) and (auto_tick % 30) == 0 then
+        if (auto_on or auto_drinks) and not con.ready then load_consumable_data() end
         local ok, err = pcall(poll_auto_quest)
         if not ok then log.warn("[MealBuffet] auto: " .. tostring(err)) end
     end
@@ -1286,6 +1334,19 @@ local function draw_meal_section()
     end
 
     imgui.separator()
+    local refresh_changed, refresh_value = imgui.checkbox(
+        "Auto refresh outside quest", auto_meal_refresh)
+    if refresh_changed then
+        auto_meal_refresh = refresh_value
+        if refresh_value then meal_cleared = false end
+        save_config()
+    end
+    imgui.same_line()
+    imgui.text(string.format("(reapply at %s left)", fmt_duration(MEAL_REFRESH_BELOW)))
+    if auto_meal_refresh and meal_cleared then
+        imgui.text("   paused after Clear meal; press Apply meal to resume")
+    end
+
     if imgui.button("Apply meal") then request_action("apply") end
     imgui.same_line()
     if imgui.button("Clear meal") then request_action("clear") end

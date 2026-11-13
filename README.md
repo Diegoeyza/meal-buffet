@@ -1,8 +1,8 @@
 # Meal Buffet
 
-> **Status: v0.2.0.** Meal apply is verified in the hub, at camp and during a
-> quest. Consumable buffs, the user presets and the auto-apply toggles are
-> verified in game as well.
+> **Status: v0.3.0.** Meals and consumables were verified in the hub, at camp and
+> during a quest for 0.2.0 (including presets and the quest auto toggles). The
+> new Meals toggle, *Auto refresh outside quest*, still needs an in-game check.
 
 **A REFramework mod for Monster Hunter Wilds.** [Nexus page](https://www.nexusmods.com/monsterhunterwilds/mods/5321) · [Releases](https://github.com/Diegoeyza/meal-buffet/releases)
 
@@ -31,6 +31,10 @@ replaces the active one directly. Remove Meal Stripper if it is installed.
   line describing what it does (toggleable).
 - **Clear meal**: removes the active meal (max HP/stamina, attack/defence, food
   skills, timer and flags) — the Meal Stripper behaviour.
+- **Auto refresh outside quest**: while you are in the hub or at a camp, the
+  meal you last applied is re-applied when it expires or has under a minute
+  left, so you keep the food skills without eating again. Paused after
+  *Clear meal* until you press *Apply meal* again.
 - **No cost**: no Meal Voucher, no ingredients, no canteen visit.
 
 ## Consumables
@@ -120,6 +124,8 @@ Meals:
    specific buff; picked buffs show their description.
 3. Press **Apply meal**. The `active skills` list shows what landed.
 4. Press **Clear meal** to remove the active meal.
+5. Tick **Auto refresh outside quest** to keep the last applied meal topped up
+   in the hub and at camp (reapplied when under a minute is left).
 
 Consumables:
 
@@ -135,7 +141,7 @@ Reload the script any time: REFramework menu → Script → **Reset scripts**.
 
 ## Status and limits
 
-v0.2.0. Meals and consumables are verified in game (hub and quests), including
+v0.3.0. Meals and consumables are verified in game (hub and quests), including
 presets, the Item Prolonger toggle and the auto toggles. Meal sets and item
 buffs are the game's own data, so a game patch that renames an internal field or
 method makes the panel report the failing call instead of throwing — a patch may

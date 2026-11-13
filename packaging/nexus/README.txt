@@ -48,6 +48,9 @@ USAGE
   - Press "Apply meal". The active skills list at the top shows what landed.
   - Press "Clear meal" to remove the active meal (this is the Meal Stripper
     strip).
+  - "Auto refresh outside quest" reapplies the last meal when it expires (or
+    has under a minute left) while you are in the hub or at camp. It pauses
+    after "Clear meal" until you apply again.
 
   Consumables:
   - Drugs, seeds, pills, powders and drinks. Tick what you want and press

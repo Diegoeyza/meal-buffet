@@ -14,7 +14,7 @@ Meals: pick a meal set, choose or reroll its two extra buffs, press Apply.
 Clear meal removes the active meal (the Meal Stripper behaviour), and applying a
 new meal replaces the active one directly, so you never need to strip first.
 "Auto refresh outside quest" reapplies the last meal when it expires or has
-under a minute left, while you are in the hub or at camp.
+20 minutes left, while you are in the hub or at camp.
 
 Consumables: drugs, seeds, pills, powders and drinks (Demondrug, Armorskin,
 Might/Adamant Seed, Might/Adamant Pill, Demon/Hardshell Powder, Dash Juice,

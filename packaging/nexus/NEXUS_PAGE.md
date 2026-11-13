@@ -56,7 +56,7 @@ Meal Buffet includes the same one-click meal strip that Meal Stripper provided �
 [*][b]Two extra buffs under your control[/b] — each slot can be left to the game's own weighted roll, set to nothing, or set to a specific buff from that meal's pool. Every active or picked skill is shown with a short description.
 [*][b]Apply[/b] — builds the meal with the game's own meal object and hands it to your hunter; the result lists the same food skills as a real canteen meal.
 [*][b]Clear meal[/b] — one click removes the active meal buff (max HP, max stamina, attack/defence bonuses and the food skills drop off). This is the Meal Stripper behaviour.
-[*][b]Auto refresh outside quest[/b] — while you are in the hub or at a camp, the meal you last applied is reapplied when it expires or has under a minute left. It pauses after [b]Clear meal[/b] until you apply again.
+[*][b]Auto refresh outside quest[/b] — while you are in the hub or at a camp, the meal you last applied is reapplied when it expires or has 20 minutes left. It pauses after [b]Clear meal[/b] until you apply again.
 [*][b]Nothing is spent[/b] — no Meal Voucher, no ingredients, no canteen visit.
 [/list]
 
@@ -140,7 +140,7 @@ Default Steam path:
 
 [b]0.3.0[/b]
 [list]
-[*]Meals: auto refresh outside quest — reapplies the last meal when it expires or has under a minute left (hub and camp).
+[*]Meals: auto refresh outside quest — reapplies the last meal when it expires or has 20 minutes left (hub and camp).
 [/list]
 
 [b]0.2.0[/b]
@@ -178,7 +178,7 @@ Source and issues: [url=https://github.com/Diegoeyza/meal-buffet]github.com/Dieg
 
 ```
 0.3.0
-- Meals: auto refresh outside quest (hub and camp), reapplying the last meal when it expires or has under a minute left.
+- Meals: auto refresh outside quest (hub and camp), reapplying the last meal when it expires or has 20 minutes left.
 
 0.2.0
 - Consumables panel: drugs, seeds, pills, powders and drinks; per-row and batch apply/clear; no item consumed.

@@ -49,7 +49,7 @@ USAGE
   - Press "Clear meal" to remove the active meal (this is the Meal Stripper
     strip).
   - "Auto refresh outside quest" reapplies the last meal when it expires (or
-    has under a minute left) while you are in the hub or at camp. It pauses
+    has 20 minutes left) while you are in the hub or at camp. It pauses
     after "Clear meal" until you apply again.
 
   Consumables:

@@ -2,7 +2,7 @@
 
 ## 0.3.0 — 2026-11-13
 - **Auto refresh outside quest** (Meals panel): while in the hub or at a camp,
-  re-applies the meal you last applied when it expires or has under a minute
+  re-applies the meal you last applied when it expires or has 20 minutes
   left. Chosen by polling `app.MissionManager.get_IsPlayingQuest()`; paused
   after *Clear meal* until you apply again.
 - Remembers the last applied meal by menu enum, so refreshing keeps the meal you

@@ -17,7 +17,7 @@
 --         _DurationTimer = _TimerMax = minutes * 60, both active flags true
 --   * shows the meal that is currently on the hunter, with its skill names.
 --   * can refresh the last applied meal while outside a quest (hub/camp), after
---     it expires or has under a minute left.
+--     it expires or has 20 minutes left.
 --   * consumables: activates the game's own item buffs (drugs, seeds, pills,
 --     powders, drinks) with
 --       app.cHunterItemBuff:activateItemBuff(type, 1.0, timeScale)
@@ -164,7 +164,7 @@ local meal_cleared = false      -- user pressed Clear meal: do not fight it
 local last_meal_menu = nil      -- menu enum of the last applied meal
 
 -- Refresh the meal when this many seconds (or less) are left on its timer.
-local MEAL_REFRESH_BELOW = 60
+local MEAL_REFRESH_BELOW = 1200
 
 
 -- ---------------------------------------------------------------------------

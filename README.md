@@ -32,7 +32,7 @@ replaces the active one directly. Remove Meal Stripper if it is installed.
 - **Clear meal**: removes the active meal (max HP/stamina, attack/defence, food
   skills, timer and flags) — the Meal Stripper behaviour.
 - **Auto refresh outside quest**: while you are in the hub or at a camp, the
-  meal you last applied is re-applied when it expires or has under a minute
+  meal you last applied is re-applied when it expires or has 20 minutes
   left, so you keep the food skills without eating again. Paused after
   *Clear meal* until you press *Apply meal* again.
 - **No cost**: no Meal Voucher, no ingredients, no canteen visit.
@@ -125,7 +125,7 @@ Meals:
 3. Press **Apply meal**. The `active skills` list shows what landed.
 4. Press **Clear meal** to remove the active meal.
 5. Tick **Auto refresh outside quest** to keep the last applied meal topped up
-   in the hub and at camp (reapplied when under a minute is left).
+   in the hub and at camp (reapplied at 20 minutes left).
 
 Consumables:
 
